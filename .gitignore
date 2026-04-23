@@ -210,3 +210,6 @@ __marimo__/
 datasets/
 raw_datasets/
 lerobot_datasets/
+
+.codex
+.claude

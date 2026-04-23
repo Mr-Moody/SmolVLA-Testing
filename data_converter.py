@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import shutil
 from bisect import bisect_left
 from collections import Counter
@@ -48,6 +49,10 @@ DEFAULT_TEXT_TOLERANCE_NS = 2_000_000_000
 DEFAULT_CAMERA_TOLERANCE_NS = 150_000_000
 DEFAULT_REPO_OWNER = "local"
 DEFAULT_VCODEC = "h264"
+
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
+LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -479,6 +484,12 @@ class SmolVLADatasetConverter:
         if not episodes:
             raise ValueError("No episodes were built from the dataset")
 
+        LOGGER.info(
+            "Starting dataset conversion for '%s' with %d episode(s).",
+            self.dataset_dir.name,
+            len(episodes),
+        )
+
         dataset = LeRobotDataset.create(
             repo_id=self.repo_id,
             fps=self._infer_fps(),
@@ -491,7 +502,15 @@ class SmolVLADatasetConverter:
 
         readers: dict[Path, VideoReaderState] = {}
         try:
-            for episode in episodes:
+            total_episodes = len(episodes)
+            for episode_number, episode in enumerate(episodes, start=1):
+                LOGGER.info(
+                    "Processing episode %d/%d (task=%s, steps=%d).",
+                    episode_number,
+                    total_episodes,
+                    episode["task"],
+                    len(episode["steps"]),
+                )
                 for step in episode["steps"]:
                     frame_dict: dict[str, Any] = {
                         "task": episode["task"],
@@ -514,6 +533,11 @@ class SmolVLADatasetConverter:
             for reader in readers.values():
                 reader.capture.release()
 
+        LOGGER.info(
+            "Finished dataset conversion for '%s'. Output written to %s.",
+            self.dataset_dir.name,
+            self.output_dir,
+        )
         return self.output_dir
 
 
@@ -606,7 +630,9 @@ def main() -> None:
         max_episodes=args.max_episodes,
         max_steps_per_episode=args.max_steps_per_episode,
     )
+    LOGGER.info("Starting converter.")
     export_dir = converter.export()
+    LOGGER.info("Converter finished.")
     print(f"LeRobotDataset v3 written to: {export_dir}")
 
 
