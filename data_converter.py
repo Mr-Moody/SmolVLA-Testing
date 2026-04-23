@@ -355,6 +355,17 @@ class SmolVLADatasetConverter:
 
         return False
 
+    def _first_camera_covered_index(self, robot_slice: list[dict[str, Any]]) -> int:
+        """Return the index of the first step that has a matching frame for every camera."""
+        for index, row in enumerate(robot_slice):
+            timestamp_ns = infer_timestamp_ns(row)
+            if all(
+                self._match_camera_frame(timestamp_ns, frames) is not None
+                for frames in self.camera_frames.values()
+            ):
+                return index
+        return len(robot_slice)
+
     def _trim_to_motion(self, robot_slice: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], int, int]:
         if not robot_slice:
             return [], 0, 0
@@ -439,6 +450,21 @@ class SmolVLADatasetConverter:
                 )
                 continue
             robot_slice = trimmed_slice
+
+            first_covered = self._first_camera_covered_index(robot_slice)
+            if first_covered >= len(robot_slice):
+                LOGGER.info(
+                    "Skipping segment %d: no robot steps fall within camera coverage window.",
+                    episode_index,
+                )
+                continue
+            if first_covered > 0:
+                LOGGER.info(
+                    "Segment %d: dropped %d leading step(s) outside camera coverage (robot clock / PC clock offset).",
+                    episode_index,
+                    first_covered,
+                )
+                robot_slice = robot_slice[first_covered:]
 
             if self.max_steps_per_episode is not None:
                 robot_slice = robot_slice[: self.max_steps_per_episode]
