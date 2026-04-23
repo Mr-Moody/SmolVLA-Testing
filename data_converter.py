@@ -49,6 +49,10 @@ DEFAULT_TEXT_TOLERANCE_NS = 2_000_000_000
 DEFAULT_CAMERA_TOLERANCE_NS = 150_000_000
 DEFAULT_REPO_OWNER = "local"
 DEFAULT_VCODEC = "h264"
+DEFAULT_JOINT_MOTION_THRESHOLD = 5e-4
+DEFAULT_GRIPPER_MOTION_THRESHOLD = 2e-4
+DEFAULT_ACTION_TRANSLATION_THRESHOLD = 5e-6
+DEFAULT_ACTION_ROTATION_THRESHOLD = 5e-5
 
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
@@ -161,6 +165,10 @@ class SmolVLADatasetConverter:
         vcodec: str = DEFAULT_VCODEC,
         max_episodes: int | None = None,
         max_steps_per_episode: int | None = None,
+        joint_motion_threshold: float = DEFAULT_JOINT_MOTION_THRESHOLD,
+        gripper_motion_threshold: float = DEFAULT_GRIPPER_MOTION_THRESHOLD,
+        action_translation_threshold: float = DEFAULT_ACTION_TRANSLATION_THRESHOLD,
+        action_rotation_threshold: float = DEFAULT_ACTION_ROTATION_THRESHOLD,
     ) -> None:
         self.dataset_dir = dataset_dir
         self.output_dir = output_dir
@@ -172,6 +180,10 @@ class SmolVLADatasetConverter:
         self.vcodec = vcodec
         self.max_episodes = max_episodes
         self.max_steps_per_episode = max_steps_per_episode
+        self.joint_motion_threshold = float(joint_motion_threshold)
+        self.gripper_motion_threshold = float(gripper_motion_threshold)
+        self.action_translation_threshold = float(action_translation_threshold)
+        self.action_rotation_threshold = float(action_rotation_threshold)
 
         self.session_metadata = read_json(self.dataset_dir / "session_metadata.json")
         self.robot_rows = read_jsonl(self.dataset_dir / "robot.jsonl")
@@ -273,26 +285,94 @@ class SmolVLADatasetConverter:
 
         return aligned
 
+    @staticmethod
+    def _normalize_event_name(row: dict[str, Any]) -> str | None:
+        for key in ("event", "episode_event"):
+            value = row.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip().lower()
+        return None
+
     def _episode_boundaries(self) -> list[tuple[int, int]]:
-        start_times = sorted(
-            int(row["robot_timestamp_ns"])
-            for row in self.episode_rows
-            if row.get("event") == "episode_start" and row.get("robot_timestamp_ns") is not None
-        )
-        if not start_times:
-            return [(0, len(self.robot_rows))]
-
         robot_times = [infer_timestamp_ns(row) for row in self.robot_rows]
-        boundaries: list[tuple[int, int]] = []
+        if not robot_times:
+            return []
 
-        for index, start_time in enumerate(start_times):
-            next_start = start_times[index + 1] if index + 1 < len(start_times) else None
-            start_idx = bisect_left(robot_times, start_time)
-            end_idx = bisect_left(robot_times, next_start) if next_start is not None else len(robot_times)
+        split_indices: set[int] = {0, len(robot_times)}
+        for row in self.episode_rows:
+            event_name = self._normalize_event_name(row)
+            if event_name not in {"episode_start", "episode_end", "episode_stop", "episode_finish", "episode_finished"}:
+                continue
+            if row.get("robot_timestamp_ns") is None:
+                continue
+            split_indices.add(bisect_left(robot_times, int(row["robot_timestamp_ns"])))
+
+        sorted_splits = sorted(split_indices)
+        boundaries: list[tuple[int, int]] = []
+        for start_idx, end_idx in zip(sorted_splits[:-1], sorted_splits[1:]):
             if end_idx > start_idx:
                 boundaries.append((start_idx, end_idx))
 
-        return boundaries or [(0, len(self.robot_rows))]
+        return boundaries or [(0, len(robot_times))]
+
+    @staticmethod
+    def _extract_joint_positions(row: dict[str, Any]) -> np.ndarray:
+        values = [float(value) for value in row.get("robot_state", {}).get("q", [])]
+        return np.asarray(values, dtype=np.float64)
+
+    @staticmethod
+    def _extract_gripper_width(row: dict[str, Any]) -> float:
+        return float(row.get("robot_state", {}).get("gripper_width", 0.0))
+
+    @staticmethod
+    def _extract_action_norms(row: dict[str, Any]) -> tuple[float, float]:
+        executed_action = row.get("executed_action", {})
+        translation = np.asarray(executed_action.get("cartesian_delta_translation", []), dtype=np.float64)
+        rotation = np.asarray(executed_action.get("cartesian_delta_rotation", []), dtype=np.float64)
+        translation_norm = float(np.linalg.norm(translation)) if translation.size else 0.0
+        rotation_norm = float(np.linalg.norm(rotation)) if rotation.size else 0.0
+        return translation_norm, rotation_norm
+
+    def _is_moving_step(self, current: dict[str, Any], previous: dict[str, Any] | None) -> bool:
+        translation_norm, rotation_norm = self._extract_action_norms(current)
+        if translation_norm > self.action_translation_threshold:
+            return True
+        if rotation_norm > self.action_rotation_threshold:
+            return True
+        if previous is None:
+            return False
+
+        current_q = self._extract_joint_positions(current)
+        previous_q = self._extract_joint_positions(previous)
+        if current_q.size and previous_q.size and current_q.shape == previous_q.shape:
+            joint_delta = float(np.max(np.abs(current_q - previous_q)))
+            if joint_delta > self.joint_motion_threshold:
+                return True
+
+        gripper_delta = abs(self._extract_gripper_width(current) - self._extract_gripper_width(previous))
+        if gripper_delta > self.gripper_motion_threshold:
+            return True
+
+        return False
+
+    def _trim_to_motion(self, robot_slice: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], int, int]:
+        if not robot_slice:
+            return [], 0, 0
+
+        moving_indices = [
+            index
+            for index in range(len(robot_slice))
+            if self._is_moving_step(robot_slice[index], robot_slice[index - 1] if index > 0 else None)
+        ]
+        if not moving_indices:
+            return [], len(robot_slice), 0
+
+        first_moving = moving_indices[0]
+        last_moving = moving_indices[-1]
+        trimmed = robot_slice[first_moving : last_moving + 1]
+        removed_leading = first_moving
+        removed_trailing = len(robot_slice) - 1 - last_moving
+        return trimmed, removed_leading, removed_trailing
 
     def _state_vector(self, row: dict[str, Any]) -> np.ndarray:
         robot_state = row["robot_state"]
@@ -339,15 +419,38 @@ class SmolVLADatasetConverter:
         episodes: list[dict[str, Any]] = []
 
         episode_boundaries = self._episode_boundaries()
+        LOGGER.info("Built %d event-based segment(s) from episode events.", len(episode_boundaries))
         if self.max_episodes is not None:
             episode_boundaries = episode_boundaries[: self.max_episodes]
 
+        skipped_static = 0
         for episode_index, (start_idx, end_idx) in enumerate(episode_boundaries):
             robot_slice = self.robot_rows[start_idx:end_idx]
             if not robot_slice:
                 continue
+
+            trimmed_slice, removed_leading, removed_trailing = self._trim_to_motion(robot_slice)
+            if not trimmed_slice:
+                skipped_static += 1
+                LOGGER.info(
+                    "Skipping segment %d (%d steps): no arm motion detected.",
+                    episode_index,
+                    len(robot_slice),
+                )
+                continue
+            robot_slice = trimmed_slice
+
             if self.max_steps_per_episode is not None:
                 robot_slice = robot_slice[: self.max_steps_per_episode]
+
+            if removed_leading or removed_trailing:
+                LOGGER.info(
+                    "Segment %d trimmed: removed %d leading and %d trailing static step(s); kept %d step(s).",
+                    episode_index,
+                    removed_leading,
+                    removed_trailing,
+                    len(robot_slice),
+                )
 
             steps: list[dict[str, Any]] = []
             matched_frames_by_camera: dict[str, list[CameraFrame]] = {name: [] for name in self.camera_frames}
@@ -383,16 +486,25 @@ class SmolVLADatasetConverter:
                 text_alignment[camera_name] = alignment
                 synced_text_values.extend(item["text"] for item in alignment if item["text"])
 
-            task = self._dominant_episode_text(synced_text_values, fallback=f"episode_{episode_index:06d}")
+            output_episode_index = len(episodes)
+            task = self._dominant_episode_text(
+                synced_text_values,
+                fallback=f"episode_{output_episode_index:06d}",
+            )
             episodes.append(
                 {
-                    "episode_index": episode_index,
+                    "episode_index": output_episode_index,
                     "task": task,
                     "steps": steps,
                     "text_alignment": text_alignment,
                 }
             )
 
+        LOGGER.info(
+            "Episode preprocessing complete: kept %d episode(s), skipped %d static segment(s).",
+            len(episodes),
+            skipped_static,
+        )
         return episodes
 
     def _infer_fps(self) -> int:
@@ -605,6 +717,30 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Optional limit for the number of steps exported from each episode.",
     )
+    parser.add_argument(
+        "--joint-motion-threshold",
+        type=float,
+        default=DEFAULT_JOINT_MOTION_THRESHOLD,
+        help="Maximum joint delta considered stationary between consecutive steps.",
+    )
+    parser.add_argument(
+        "--gripper-motion-threshold",
+        type=float,
+        default=DEFAULT_GRIPPER_MOTION_THRESHOLD,
+        help="Maximum gripper-width delta considered stationary between consecutive steps.",
+    )
+    parser.add_argument(
+        "--action-translation-threshold",
+        type=float,
+        default=DEFAULT_ACTION_TRANSLATION_THRESHOLD,
+        help="Minimum executed_action translation norm considered movement.",
+    )
+    parser.add_argument(
+        "--action-rotation-threshold",
+        type=float,
+        default=DEFAULT_ACTION_ROTATION_THRESHOLD,
+        help="Minimum executed_action rotation norm considered movement.",
+    )
     return parser.parse_args()
 
 
@@ -629,6 +765,10 @@ def main() -> None:
         vcodec=args.vcodec,
         max_episodes=args.max_episodes,
         max_steps_per_episode=args.max_steps_per_episode,
+        joint_motion_threshold=args.joint_motion_threshold,
+        gripper_motion_threshold=args.gripper_motion_threshold,
+        action_translation_threshold=args.action_translation_threshold,
+        action_rotation_threshold=args.action_rotation_threshold,
     )
     LOGGER.info("Starting converter.")
     export_dir = converter.export()
