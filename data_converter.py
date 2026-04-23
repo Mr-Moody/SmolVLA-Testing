@@ -190,6 +190,16 @@ class SmolVLADatasetConverter:
         self.episode_rows = read_jsonl(self.dataset_dir / "episode_events.jsonl")
         self.text_rows = self._load_text_rows()
         self.camera_frames = self._load_camera_frames()
+        # Precompute per-camera sorted timestamp arrays so _match_camera_frame is O(log n)
+        # instead of O(n) per call.
+        self._camera_timestamps: dict[str, list[int]] = {
+            name: [frame.timestamp_ns for frame in frames]
+            for name, frames in self.camera_frames.items()
+        }
+        # Precompute feature key mapping so the inner export loop avoids repeated sorts.
+        self._feature_name_cache: dict[str, str] = {
+            name: self._camera_feature_name(name) for name in self.camera_frames
+        }
 
     def _load_text_rows(self) -> list[TextRecord]:
         text_path = first_existing_path(
@@ -360,8 +370,8 @@ class SmolVLADatasetConverter:
         for index, row in enumerate(robot_slice):
             timestamp_ns = infer_timestamp_ns(row)
             if all(
-                self._match_camera_frame(timestamp_ns, frames) is not None
-                for frames in self.camera_frames.values()
+                self._match_camera_frame(timestamp_ns, name) is not None
+                for name in self.camera_frames
             ):
                 return index
         return len(robot_slice)
@@ -411,8 +421,9 @@ class SmolVLADatasetConverter:
         default_camera = sorted(self.camera_frames)[0]
         return "observation.images.top" if camera_name == default_camera else f"observation.images.{camera_name}"
 
-    def _match_camera_frame(self, timestamp_ns: int, frames: list[CameraFrame]) -> CameraFrame | None:
-        frame_timestamps = [frame.timestamp_ns for frame in frames]
+    def _match_camera_frame(self, timestamp_ns: int, camera_name: str) -> CameraFrame | None:
+        frames = self.camera_frames[camera_name]
+        frame_timestamps = self._camera_timestamps[camera_name]
         match_index = closest_index(frame_timestamps, timestamp_ns)
         if match_index is None:
             return None
@@ -485,8 +496,8 @@ class SmolVLADatasetConverter:
                 timestamp_ns = infer_timestamp_ns(robot_row)
                 camera_matches: dict[str, CameraFrame] = {}
 
-                for camera_name, frames in self.camera_frames.items():
-                    matched_frame = self._match_camera_frame(timestamp_ns, frames)
+                for camera_name in self.camera_frames:
+                    matched_frame = self._match_camera_frame(timestamp_ns, camera_name)
                     if matched_frame is None:
                         raise ValueError(
                             f"No camera frame within {self.camera_tolerance_ns / 1e6:.1f} ms "
@@ -657,14 +668,14 @@ class SmolVLADatasetConverter:
                     }
 
                     for camera_name, matched_frame in step["camera_matches"].items():
-                        frame_dict[self._camera_feature_name(camera_name)] = self._load_video_frame(
+                        frame_dict[self._feature_name_cache[camera_name]] = self._load_video_frame(
                             matched_frame,
                             readers,
                         )
 
                     dataset.add_frame(frame_dict)
 
-                dataset.save_episode(parallel_encoding=False)
+                dataset.save_episode(parallel_encoding=True)
 
             dataset.finalize()
         finally:
