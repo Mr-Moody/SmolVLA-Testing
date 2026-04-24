@@ -84,6 +84,10 @@ class SmolVLADatasetConverter:
         self.max_episodes = max_episodes
         self.max_steps_per_episode = max_steps_per_episode
 
+        self._device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        LOGGER.info("Device: %s", self._device)
+        LOGGER.info("Loading dataset: %s", dataset_dir)
+
         self.session_metadata = read_json(dataset_dir / "session_metadata.json")
         self.robot_rows = read_jsonl(dataset_dir / "robot.jsonl")
         self.episode_rows = read_jsonl(dataset_dir / "episode_events.jsonl")
@@ -97,8 +101,12 @@ class SmolVLADatasetConverter:
             name: self._camera_feature_name(name) for name in self.camera_frames
         }
 
-        self._device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        LOGGER.info("Using device: %s", self._device)
+        LOGGER.info(
+            "Loaded %d robot row(s), %d camera(s): %s",
+            len(self.robot_rows),
+            len(self.camera_frames),
+            ", ".join(self.camera_frames),
+        )
         self._camera_ts_tensors: dict[str, torch.Tensor] = {
             name: torch.tensor(ts, dtype=torch.int64, device=self._device)
             for name, ts in self._camera_timestamps.items()
