@@ -135,6 +135,15 @@ SEED=1000
 # Leave empty to disable AMP
 AMP_FLAG="--use-amp"
 
+# Experimental: patch lerobot video decoding to keep nearest-frame fallback
+# when timestamp tolerance is violated instead of raising FrameTimestampError.
+# Set to false to disable and restore strict behavior.
+ALLOW_NEAREST_FRAME_FALLBACK=true
+
+# Experimental: patch tokenizer to replace missing task strings with a fallback
+# label instead of raising ValueError("Task cannot be None").
+ALLOW_MISSING_TASK_FALLBACK=true
+
 # ---------------------------------------------------------------------------
 # 1. RE-EXPORT CACHE ENVIRONMENT VARIABLES
 # ---------------------------------------------------------------------------
@@ -255,6 +264,62 @@ mkdir -p "${SCRATCH_BASE}/smolvla_outputs"  # parent only — lerobot creates th
 # Ensure the persistent rescue directory exists in home
 mkdir -p "${RESCUE_DIR}"
 
+if [[ "${ALLOW_NEAREST_FRAME_FALLBACK}" == "true" ]]; then
+    echo "Applying nearest-frame fallback patch (experimental)..."
+    if ! python "${SMOLVLA_REPO}/patch_frame_tolerance.py"; then
+        echo "ERROR: Failed to patch lerobot timestamp tolerance behavior."
+        echo "Set ALLOW_NEAREST_FRAME_FALLBACK=false to continue with strict decoding."
+        exit 1
+    fi
+
+    PATCH_TARGET="${LEROBOT_ROOT}/src/lerobot/datasets/video_utils.py"
+    if ! grep -q "SmolVLA-Testing patch: tolerate timestamp violations by using nearest frame." "${PATCH_TARGET}"; then
+        echo "ERROR: Nearest-frame fallback marker not found in ${PATCH_TARGET}"
+        echo "Aborting to avoid running with strict timestamp checks by accident."
+        exit 1
+    fi
+    echo "Nearest-frame fallback patch verified in ${PATCH_TARGET}"
+fi
+
+if [[ "${ALLOW_MISSING_TASK_FALLBACK}" == "true" ]]; then
+    echo "Applying missing-task fallback patch (experimental)..."
+    if ! python "${SMOLVLA_REPO}/patch_task_none.py"; then
+        echo "ERROR: Failed to patch tokenizer missing-task behavior."
+        echo "Set ALLOW_MISSING_TASK_FALLBACK=false to continue with strict task checks."
+        exit 1
+    fi
+
+    TASK_PATCH_TARGET="${LEROBOT_ROOT}/src/lerobot/processor/tokenizer_processor.py"
+    if ! grep -q "SmolVLA-Testing patch: allow missing task with fallback label." "${TASK_PATCH_TARGET}"; then
+        echo "ERROR: Missing-task fallback marker not found in ${TASK_PATCH_TARGET}"
+        echo "Aborting to avoid running with strict task checks by accident."
+        exit 1
+    fi
+    echo "Missing-task fallback patch verified in ${TASK_PATCH_TARGET}"
+fi
+
+# Validate that the lerobot checkout has the symbols used by main.py.
+# This catches version/API mismatches early with a clear error instead of an
+# immediate nohup exit code 1 with no output directory.
+echo "Checking lerobot training imports..."
+cd "${LEROBOT_ROOT}" && uv run python - <<'PY'
+from lerobot.configs.default import DatasetConfig
+from lerobot.configs.train import TrainPipelineConfig
+from lerobot.policies.smolvla import SmolVLAConfig
+from lerobot.scripts.lerobot_train import train
+
+print("lerobot import check passed")
+PY
+
+if [[ $? -ne 0 ]]; then
+    echo "ERROR: lerobot import preflight failed."
+    echo "Your lerobot checkout or environment is likely out-of-sync with main.py."
+    echo "Fix by updating lerobot and rebuilding the scratch environment:"
+    echo "  cd ${LEROBOT_ROOT} && git pull"
+    echo "  bash ${SMOLVLA_REPO}/setup_scratch.sh"
+    exit 1
+fi
+
 # ---------------------------------------------------------------------------
 # 3. CHECKPOINT RESCUE TRAP
 # ---------------------------------------------------------------------------
@@ -271,7 +336,7 @@ mkdir -p "${RESCUE_DIR}"
 # fire. Enable periodic mid-run sync by setting SYNC_FREQ below.
 
 rescue_checkpoints() {
-    local exit_code=$?
+    local exit_code="${1:-$?}"
     echo ""
     echo "================================================================="
     echo "  EXIT TRAP FIRED (exit code: ${exit_code})"
@@ -334,8 +399,10 @@ SYNC_INTERVAL_SECONDS=1800  # sync every 30 minutes
 ) &
 SYNC_PID=$!
 
-# Override the EXIT trap to also kill the sync loop on clean exit
-trap "kill ${SYNC_PID} 2>/dev/null; rescue_checkpoints" EXIT
+# Override the EXIT trap to also kill the sync loop on clean exit.
+# Preserve the script's real exit code; otherwise the preceding `kill` can
+# overwrite `$?` and make failures look like success in the rescue log.
+trap 'exit_code=$?; kill "${SYNC_PID}" 2>/dev/null || true; rescue_checkpoints "${exit_code}"' EXIT
 
 # ---------------------------------------------------------------------------
 # 5. BUILD THE TRAINING COMMAND
@@ -442,6 +509,59 @@ FINAL_EXIT=$?
 
 echo ""
 echo "Training process exited with code: ${FINAL_EXIT}"
+
+if [[ ${FINAL_EXIT} -ne 0 ]]; then
+    echo ""
+    echo "================================================================="
+    echo "  Training failed (exit ${FINAL_EXIT})."
+    echo "  Extracting latest traceback/error block from ${LOG_FILE}:"
+    echo "================================================================="
+    if [[ -f "${LOG_FILE}" ]]; then
+        python - "${LOG_FILE}" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+log_path = Path(sys.argv[1])
+lines = log_path.read_text(errors="replace").splitlines()
+
+# Prefer the last traceback block (until next blank separator) if present.
+tb_start = None
+for i, line in enumerate(lines):
+    if "Traceback (most recent call last):" in line:
+        tb_start = i
+
+if tb_start is not None:
+    end = len(lines)
+    for j in range(tb_start + 1, len(lines)):
+        if lines[j].startswith("================================================================="):
+            end = j
+            break
+    for line in lines[tb_start:end]:
+        print(line)
+    raise SystemExit(0)
+
+# Fallback: print last 40 likely error lines.
+err_pat = re.compile(r"(error|exception|traceback|killed|oom|cuda)", re.IGNORECASE)
+err_lines = [line for line in lines if err_pat.search(line)]
+if err_lines:
+    for line in err_lines[-40:]:
+        print(line)
+else:
+    # Final fallback if no explicit error markers are found.
+    for line in lines[-200:]:
+        print(line)
+PY
+        echo ""
+        echo "-----------------------------------------------------------------"
+        echo "  Last 120 lines of raw log (context):"
+        echo "-----------------------------------------------------------------"
+        tail -n 120 "${LOG_FILE}"
+    else
+        echo "  Log file not found."
+    fi
+    echo "================================================================="
+fi
 
 # EXIT trap (rescue_checkpoints) fires here automatically as the script exits.
 exit ${FINAL_EXIT}
