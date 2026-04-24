@@ -212,6 +212,23 @@ raw_datasets/
 cleaned_datasets/
 lerobot_datasets/
 outputs/
+raw_recordings/
 
+# LaTeX build artifacts
+*.aux
+*.fdb_latexmk
+*.fls
+*.log
+*.out
+*.pdf
+*.synctex.gz
+*.toc
+*.bbl
+*.blg
+*.nav
+*.snm
+*.vrb
+
+.DS_Store
 .codex
 .claude
