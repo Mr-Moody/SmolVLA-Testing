@@ -232,3 +232,4 @@ raw_recordings/
 .DS_Store
 .codex
 .claude
+.vscode/
