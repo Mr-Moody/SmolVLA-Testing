@@ -108,8 +108,10 @@ VENV_DIR="${SCRATCH_BASE}/smolvla_venv"
 # Cache dirs — must match what setup_scratch.sh configured
 CACHE_DIR="${SCRATCH_BASE}/.cache"
 
-# Log file path — written to scratch for fast I/O
-LOG_FILE="${SCRATCH_OUTPUT_DIR}/training.log"
+# Log file — sits one level above the output dir so we don't need to
+# pre-create SCRATCH_OUTPUT_DIR (lerobot creates it; pre-creating it
+# triggers a FileExistsError in lerobot's validate() when resume=False).
+LOG_FILE="${SCRATCH_BASE}/smolvla_outputs/${DATASET_JOINED}.log"
 
 # SmolVLA base model checkpoint from HuggingFace Hub.
 # Once downloaded, HF_HOME cache on scratch stores it — no re-download needed
@@ -220,7 +222,7 @@ if [[ -d "${SCRATCH_OUTPUT_DIR}" ]]; then
     fi
 fi
 
-mkdir -p "${SCRATCH_OUTPUT_DIR}"
+mkdir -p "${SCRATCH_BASE}/smolvla_outputs"  # parent only — lerobot creates the output subdir
 
 # Ensure the persistent rescue directory exists in home
 mkdir -p "${RESCUE_DIR}"
@@ -319,9 +321,6 @@ trap "kill ${SYNC_PID} 2>/dev/null; rescue_checkpoints" EXIT
 #   3. Download SmolVLA base weights to HF_HOME (scratch cache)
 #   4. Write checkpoints and logs to SCRATCH_OUTPUT_DIR (fast scratch NVMe)
 
-RESUME_FLAG=""
-[[ "${RESUME}" == "true" ]] && RESUME_FLAG="--resume"
-
 TRAIN_CMD="cd ${LEROBOT_ROOT} && uv run python ${SMOLVLA_REPO}/main.py \
     --dataset-root ${DATASET_ROOT_FLAGS} \
     --lerobot-root ${LEROBOT_ROOT} \
@@ -335,7 +334,6 @@ TRAIN_CMD="cd ${LEROBOT_ROOT} && uv run python ${SMOLVLA_REPO}/main.py \
     --seed ${SEED} \
     --device cuda \
     --eval-freq 0 \
-    ${RESUME_FLAG} \
     ${AMP_FLAG}"
 
 echo "Training command:"
