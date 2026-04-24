@@ -28,16 +28,13 @@ import shutil
 from pathlib import Path
 from typing import Any
 
-import numpy as np
+import torch
 
 from dataset_utils import (
     DEFAULT_CAMERA_TOLERANCE_NS,
-    closest_index,
     find_episode_boundaries,
-    first_existing_path,
     infer_timestamp_ns,
     load_camera_frames,
-    read_json,
     read_jsonl,
     write_jsonl,
 )
@@ -84,79 +81,109 @@ class DatasetCleaner:
             for name, frames in self.camera_frames.items()
         }
 
+        self._device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        LOGGER.info("Using device: %s", self._device)
+        self._camera_ts_tensors: dict[str, torch.Tensor] = {
+            name: torch.tensor(ts, dtype=torch.int64, device=self._device)
+            for name, ts in self._camera_timestamps.items()
+        }
+
     # --- motion detection ---
 
-    @staticmethod
-    def _extract_joint_positions(row: dict[str, Any]) -> np.ndarray:
-        values = [float(v) for v in row.get("robot_state", {}).get("q", [])]
-        return np.asarray(values, dtype=np.float64)
+    def _compute_moving_mask(self, robot_slice: list[dict[str, Any]]) -> torch.Tensor:
+        """Return a bool tensor of shape (N,) indicating which steps involve motion."""
+        N = len(robot_slice)
+        dev = self._device
 
-    @staticmethod
-    def _extract_gripper_width(row: dict[str, Any]) -> float:
-        return float(row.get("robot_state", {}).get("gripper_width", 0.0))
+        t_vecs: list[list[float]] = []
+        r_vecs: list[list[float]] = []
+        q_vecs: list[list[float]] = []
+        gw_list: list[float] = []
+        for row in robot_slice:
+            ea = row.get("executed_action", {})
+            rs = row.get("robot_state", {})
+            t_vecs.append([float(v) for v in ea.get("cartesian_delta_translation", [])])
+            r_vecs.append([float(v) for v in ea.get("cartesian_delta_rotation", [])])
+            q_vecs.append([float(v) for v in rs.get("q", [])])
+            gw_list.append(float(rs.get("gripper_width", 0.0)))
 
-    @staticmethod
-    def _extract_action_norms(row: dict[str, Any]) -> tuple[float, float]:
-        ea = row.get("executed_action", {})
-        translation = np.asarray(ea.get("cartesian_delta_translation", []), dtype=np.float64)
-        rotation = np.asarray(ea.get("cartesian_delta_rotation", []), dtype=np.float64)
-        return (
-            float(np.linalg.norm(translation)) if translation.size else 0.0,
-            float(np.linalg.norm(rotation)) if rotation.size else 0.0,
-        )
+        moving = torch.zeros(N, dtype=torch.bool, device=dev)
 
-    def _is_moving_step(self, current: dict[str, Any], previous: dict[str, Any] | None) -> bool:
-        t_norm, r_norm = self._extract_action_norms(current)
-        if t_norm > self.action_translation_threshold:
-            return True
-        if r_norm > self.action_rotation_threshold:
-            return True
-        if previous is None:
-            return False
-        cur_q = self._extract_joint_positions(current)
-        prev_q = self._extract_joint_positions(previous)
-        if cur_q.size and prev_q.size and cur_q.shape == prev_q.shape:
-            if float(np.max(np.abs(cur_q - prev_q))) > self.joint_motion_threshold:
-                return True
-        if abs(self._extract_gripper_width(current) - self._extract_gripper_width(previous)) > self.gripper_motion_threshold:
-            return True
-        return False
+        for vecs, threshold in (
+            (t_vecs, self.action_translation_threshold),
+            (r_vecs, self.action_rotation_threshold),
+        ):
+            max_len = max((len(v) for v in vecs), default=0)
+            if max_len == 0:
+                continue
+            if all(len(v) == max_len for v in vecs):
+                tensor = torch.tensor(vecs, dtype=torch.float64, device=dev)
+            else:
+                tensor = torch.zeros(N, max_len, dtype=torch.float64, device=dev)
+                for i, v in enumerate(vecs):
+                    if v:
+                        tensor[i, :len(v)] = torch.tensor(v, dtype=torch.float64)
+            moving |= torch.linalg.norm(tensor, dim=1) > threshold
+
+        first_q_len = len(q_vecs[0]) if q_vecs else 0
+        if first_q_len > 0 and all(len(q) == first_q_len for q in q_vecs):
+            q = torch.tensor(q_vecs, dtype=torch.float64, device=dev)
+            moving[1:] |= (q[1:] - q[:-1]).abs().amax(dim=1) > self.joint_motion_threshold
+
+        gw = torch.tensor(gw_list, dtype=torch.float64, device=dev)
+        if N > 1:
+            moving[1:] |= (gw[1:] - gw[:-1]).abs() > self.gripper_motion_threshold
+
+        return moving
 
     def _trim_to_motion(self, robot_slice: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], int, int]:
         if not robot_slice:
             return [], 0, 0
-        moving = [
-            i for i in range(len(robot_slice))
-            if self._is_moving_step(robot_slice[i], robot_slice[i - 1] if i > 0 else None)
-        ]
-        if not moving:
+        moving = self._compute_moving_mask(robot_slice)
+        indices = moving.nonzero(as_tuple=False).view(-1)
+        if indices.numel() == 0:
             return [], len(robot_slice), 0
-        first, last = moving[0], moving[-1]
-        return robot_slice[first : last + 1], first, len(robot_slice) - 1 - last
+        first, last = int(indices[0]), int(indices[-1])
+        return robot_slice[first:last + 1], first, len(robot_slice) - 1 - last
 
     # --- camera coverage ---
-
-    def _has_camera_coverage(self, timestamp_ns: int) -> bool:
-        for name, frames in self.camera_frames.items():
-            idx = closest_index(self._camera_timestamps[name], timestamp_ns)
-            if idx is None or abs(frames[idx].timestamp_ns - timestamp_ns) > self.camera_tolerance_ns:
-                return False
-        return True
 
     def _trim_to_camera_coverage(
         self, robot_slice: list[dict[str, Any]]
     ) -> tuple[list[dict[str, Any]], int, int]:
-        first = next(
-            (i for i, row in enumerate(robot_slice) if self._has_camera_coverage(infer_timestamp_ns(row))),
-            None,
+        if not robot_slice:
+            return [], 0, 0
+        N = len(robot_slice)
+        dev = self._device
+
+        robot_ts = torch.tensor(
+            [infer_timestamp_ns(row) for row in robot_slice],
+            dtype=torch.int64, device=dev,
         )
-        if first is None:
-            return [], len(robot_slice), 0
-        last = next(
-            (i for i in range(len(robot_slice) - 1, -1, -1) if self._has_camera_coverage(infer_timestamp_ns(robot_slice[i]))),
-            first,
-        )
-        return robot_slice[first : last + 1], first, len(robot_slice) - 1 - last
+
+        covered = torch.ones(N, dtype=torch.bool, device=dev)
+        for cam_name, cam_ts in self._camera_ts_tensors.items():
+            M = cam_ts.shape[0]
+            idx = torch.searchsorted(cam_ts, robot_ts)
+            left_idx = (idx - 1).clamp(min=0)
+            right_idx = idx.clamp(max=M - 1)
+            left_delta = torch.where(
+                idx > 0,
+                (cam_ts[left_idx] - robot_ts).abs(),
+                torch.full_like(robot_ts, 10 ** 18),
+            )
+            right_delta = torch.where(
+                idx < M,
+                (cam_ts[right_idx] - robot_ts).abs(),
+                torch.full_like(robot_ts, 10 ** 18),
+            )
+            covered &= torch.minimum(left_delta, right_delta) <= self.camera_tolerance_ns
+
+        covered_idx = covered.nonzero(as_tuple=False).view(-1)
+        if covered_idx.numel() == 0:
+            return [], N, 0
+        first, last = int(covered_idx[0]), int(covered_idx[-1])
+        return robot_slice[first:last + 1], first, N - 1 - last
 
     # --- main ---
 

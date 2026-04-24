@@ -97,6 +97,13 @@ class SmolVLADatasetConverter:
             name: self._camera_feature_name(name) for name in self.camera_frames
         }
 
+        self._device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        LOGGER.info("Using device: %s", self._device)
+        self._camera_ts_tensors: dict[str, torch.Tensor] = {
+            name: torch.tensor(ts, dtype=torch.int64, device=self._device)
+            for name, ts in self._camera_timestamps.items()
+        }
+
     @staticmethod
     def sync_text_to_frames(
         frames: list[CameraFrame],
@@ -132,16 +139,40 @@ class SmolVLADatasetConverter:
         default_camera = sorted(self.camera_frames)[0]
         return "observation.images.top" if camera_name == default_camera else f"observation.images.{camera_name}"
 
-    def _match_camera_frame(self, timestamp_ns: int, camera_name: str) -> CameraFrame | None:
+    def _match_camera_frames_batch(
+        self, timestamps_ns: list[int], camera_name: str
+    ) -> list[CameraFrame | None]:
+        """Return the nearest CameraFrame (or None if outside tolerance) for each timestamp."""
         frames = self.camera_frames[camera_name]
-        frame_timestamps = self._camera_timestamps[camera_name]
-        match_index = closest_index(frame_timestamps, timestamp_ns)
-        if match_index is None:
-            return None
-        matched = frames[match_index]
-        if abs(matched.timestamp_ns - timestamp_ns) > self.camera_tolerance_ns:
-            return None
-        return matched
+        M = len(frames)
+        if M == 0:
+            return [None] * len(timestamps_ns)
+
+        cam_ts = self._camera_ts_tensors[camera_name]
+        robot_ts = torch.tensor(timestamps_ns, dtype=torch.int64, device=self._device)
+
+        idx = torch.searchsorted(cam_ts, robot_ts)
+        left_idx = (idx - 1).clamp(min=0)
+        right_idx = idx.clamp(max=M - 1)
+
+        left_delta = torch.where(
+            idx > 0,
+            (cam_ts[left_idx] - robot_ts).abs(),
+            torch.full_like(robot_ts, 10 ** 18),
+        )
+        right_delta = torch.where(
+            idx < M,
+            (cam_ts[right_idx] - robot_ts).abs(),
+            torch.full_like(robot_ts, 10 ** 18),
+        )
+
+        use_right = right_delta < left_delta
+        best_idx = torch.where(use_right, right_idx, left_idx)
+        best_delta = torch.minimum(left_delta, right_delta)
+
+        best_idx_list = best_idx.cpu().tolist()
+        valid_list = (best_delta <= self.camera_tolerance_ns).cpu().tolist()
+        return [frames[i] if v else None for i, v in zip(best_idx_list, valid_list)]
 
     def _dominant_episode_text(self, synced_texts: list[str], fallback: str) -> str:
         if not synced_texts:
@@ -248,14 +279,21 @@ class SmolVLADatasetConverter:
             if self.max_steps_per_episode is not None:
                 robot_slice = robot_slice[: self.max_steps_per_episode]
 
+            step_timestamps = [infer_timestamp_ns(row) for row in robot_slice]
+
+            # Batch-match all camera frames for this episode in one GPU pass per camera.
+            camera_frame_matches: dict[str, list[CameraFrame | None]] = {
+                cam: self._match_camera_frames_batch(step_timestamps, cam)
+                for cam in self.camera_frames
+            }
+
             steps: list[dict[str, Any]] = []
             matched_frames_by_camera: dict[str, list[CameraFrame]] = {name: [] for name in self.camera_frames}
 
             for step_index, robot_row in enumerate(robot_slice):
-                timestamp_ns = infer_timestamp_ns(robot_row)
                 camera_matches: dict[str, CameraFrame] = {}
                 for camera_name in self.camera_frames:
-                    matched_frame = self._match_camera_frame(timestamp_ns, camera_name)
+                    matched_frame = camera_frame_matches[camera_name][step_index]
                     if matched_frame is None:
                         raise ValueError(
                             f"No camera frame within {self.camera_tolerance_ns / 1e6:.1f} ms "
@@ -266,7 +304,7 @@ class SmolVLADatasetConverter:
 
                 steps.append({
                     "step_index": step_index,
-                    "timestamp_ns": timestamp_ns,
+                    "timestamp_ns": step_timestamps[step_index],
                     "observation.state": self._state_vector(robot_row),
                     "action": self._action_vector(robot_row),
                     "camera_matches": camera_matches,
