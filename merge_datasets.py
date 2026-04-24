@@ -61,7 +61,7 @@ def ep_parquet_path(info: dict, root: Path, episode_index: int) -> Path:
     chunks_size = info.get("chunks_size", 1000)
     chunk = episode_index // chunks_size
     template = info.get("data_path", "data/chunk-{chunk_index:03d}/episode_{episode_index:06d}.parquet")
-    rel_path = template.format(chunk_index=chunk, episode_index=episode_index, file_index=episode_index)
+    rel_path = template.format(chunk_index=chunk, episode_index=episode_index, file_index=episode_index + 1)
     return root / rel_path
 
 
@@ -70,7 +70,7 @@ def ep_video_path(info: dict, root: Path, video_key: str, episode_index: int) ->
     chunks_size = info.get("chunks_size", 1000)
     chunk = episode_index // chunks_size
     template = info.get("video_path", "videos/chunk-{chunk_index:03d}/{video_key}/episode_{episode_index:06d}.mp4")
-    rel_path = template.format(chunk_index=chunk, video_key=video_key, episode_index=episode_index, file_index=episode_index)
+    rel_path = template.format(chunk_index=chunk, video_key=video_key, episode_index=episode_index, file_index=episode_index + 1)
     return root / rel_path
 
 
