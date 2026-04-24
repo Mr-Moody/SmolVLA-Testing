@@ -38,10 +38,10 @@
 #
 # USAGE
 # -----
-#   bash ~/smolvla_project/SmolVLA-Testing/run_training.sh [DATASET_NAME]
+#   bash ~/smolvla_project/SmolVLA-Testing/run_training.sh 001 002 003
 #
-#   DATASET_NAME  basename of the converted LeRobotDataset directory, e.g.
-#                 "example" for lerobot_datasets/example/  (default: "example")
+#   Pass one or more dataset basenames. All are trained jointly.
+#   Defaults to "example" if no argument is given.
 #
 # To resume from a checkpoint, set RESUME_CHECKPOINT below before running.
 # =============================================================================
@@ -218,14 +218,14 @@ rescue_checkpoints() {
         #   --partial : keep partially-transferred files on interrupt (rsync-safe resume)
         rsync -avz --partial \
             "${SCRATCH_OUTPUT_DIR}/" \
-            "${RESCUE_DIR}/${DATASET_NAME}_smolvla/" \
+            "${RESCUE_DIR}/${DATASET_JOINED}_smolvla/" \
             2>&1 | tee -a "${LOG_FILE}"
 
         local rsync_status=$?
         if [[ ${rsync_status} -eq 0 ]]; then
             echo ""
             echo "  Rescue complete. Checkpoints are safe at:"
-            echo "    ${RESCUE_DIR}/${DATASET_NAME}_smolvla/"
+            echo "    ${RESCUE_DIR}/${DATASET_JOINED}_smolvla/"
             echo ""
             echo "  Pull them to your local machine with:"
             echo "    rsync -avP ${USER}@knuckles.cs.ucl.ac.uk:${RESCUE_DIR}/ \\"
@@ -260,8 +260,8 @@ SYNC_INTERVAL_SECONDS=1800  # sync every 30 minutes
 (
   while true; do
     sleep "${SYNC_INTERVAL_SECONDS}"
-    rsync -az --partial "${SCRATCH_OUTPUT_DIR}/" "${RESCUE_DIR}/${DATASET_NAME}_smolvla/"
-    echo "$(date '+%Y-%m-%d %H:%M:%S') | periodic sync to ${RESCUE_DIR}/${DATASET_NAME}_smolvla/ complete" >> "${LOG_FILE}"
+    rsync -az --partial "${SCRATCH_OUTPUT_DIR}/" "${RESCUE_DIR}/${DATASET_JOINED}_smolvla/"
+    echo "$(date '+%Y-%m-%d %H:%M:%S') | periodic sync to ${RESCUE_DIR}/${DATASET_JOINED}_smolvla/ complete" >> "${LOG_FILE}"
   done
 ) &
 SYNC_PID=$!
@@ -355,7 +355,7 @@ echo "  SAFE TO DISCONNECT — close the SSH terminal or browser tab."
 echo "  Do NOT click 'Log Out' in the Guacamole desktop menu."
 echo ""
 echo "  When the run finishes, checkpoints will be rescued to:"
-echo "    ${RESCUE_DIR}/${DATASET_NAME}_smolvla/"
+echo "    ${RESCUE_DIR}/${DATASET_JOINED}_smolvla/"
 echo "================================================================="
 
 # ---------------------------------------------------------------------------
