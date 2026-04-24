@@ -346,9 +346,9 @@ def _delete_episode_marker(dataset_dir: Path, ep_idx: int) -> None:
   if len(marker_indices) == len(boundaries):
     marker_pos = ep_idx
   elif len(marker_indices) == len(boundaries) - 1:
-    if ep_idx == 0:
-      raise ValueError("cannot delete episode 0 marker because first boundary is implicit")
-    marker_pos = ep_idx - 1
+    # First boundary can be implicit at robot row 0, so episode 0 maps to
+    # the first explicit marker in episode_events.jsonl.
+    marker_pos = 0 if ep_idx == 0 else ep_idx - 1
   else:
     start_robot_idx, _ = boundaries[ep_idx]
     target_ts = infer_timestamp_ns(robot_rows[start_robot_idx])
