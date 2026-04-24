@@ -19,6 +19,7 @@ from __future__ import annotations
 import argparse
 import logging
 import shutil
+import time
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
@@ -27,6 +28,7 @@ from typing import Any
 import cv2
 import numpy as np
 import torch
+from tqdm import tqdm
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
 
 from dataset_utils import (
@@ -349,11 +351,10 @@ class SmolVLADatasetConverter:
         if not episodes:
             raise ValueError("No episodes were built from the dataset.")
 
-        LOGGER.info(
-            "Starting conversion for '%s' with %d episode(s).",
-            self.dataset_dir.name,
-            len(episodes),
-        )
+        tqdm.write(f"Device:  {self._device}")
+        tqdm.write(f"Dataset: {self.dataset_dir}")
+        tqdm.write(f"Output:  {self.output_dir}")
+        tqdm.write(f"Starting conversion: {len(episodes)} episode(s).")
 
         dataset = LeRobotDataset.create(
             repo_id=self.repo_id,
@@ -368,11 +369,10 @@ class SmolVLADatasetConverter:
         readers: dict[Path, VideoReaderState] = {}
         try:
             total = len(episodes)
-            for episode_number, episode in enumerate(episodes, start=1):
-                LOGGER.info(
-                    "Processing episode %d/%d (task=%s, steps=%d).",
-                    episode_number, total, episode["task"], len(episode["steps"]),
-                )
+            pbar = tqdm(episodes, desc="Converting", unit="ep", dynamic_ncols=True)
+            for episode_number, episode in enumerate(pbar, start=1):
+                ep_start = time.monotonic()
+                pbar.set_postfix({"ep": f"{episode_number}/{total}", "steps": len(episode["steps"])})
                 for step in episode["steps"]:
                     frame_dict: dict[str, Any] = {
                         "task": episode["task"],
@@ -385,12 +385,17 @@ class SmolVLADatasetConverter:
                         )
                     dataset.add_frame(frame_dict)
                 dataset.save_episode(parallel_encoding=True)
+                elapsed = time.monotonic() - ep_start
+                tqdm.write(
+                    f"  Episode {episode_number}/{total} done in {elapsed:.1f}s"
+                    f" — {len(episode['steps'])} steps, task: {episode['task']}"
+                )
             dataset.finalize()
         finally:
             for reader in readers.values():
                 reader.capture.release()
 
-        LOGGER.info("Conversion complete. Output written to %s", self.output_dir)
+        tqdm.write(f"Conversion complete. Output: {self.output_dir}")
         return self.output_dir
 
 
