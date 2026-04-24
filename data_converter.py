@@ -38,6 +38,7 @@ from dataset_utils import (
     closest_index,
     find_episode_boundaries,
     infer_timestamp_ns,
+    load_annotations,
     load_camera_frames,
     load_text_rows,
     read_json,
@@ -120,6 +121,7 @@ class SmolVLADatasetConverter:
         self.robot_rows = read_jsonl(dataset_dir / "robot.jsonl")
         self.episode_rows = read_jsonl(dataset_dir / "episode_events.jsonl")
         self.text_rows = load_text_rows(dataset_dir)
+        self._annotations = load_annotations(dataset_dir)
         self.camera_frames = load_camera_frames(dataset_dir)
         self._camera_timestamps: dict[str, list[int]] = {
             name: [frame.timestamp_ns for frame in frames]
@@ -458,7 +460,10 @@ class SmolVLADatasetConverter:
                 synced_text_values.extend(item["text"] for item in alignment if item["text"])
 
             output_index = len(episodes)
-            task = self._dominant_episode_text(synced_text_values, fallback=f"episode_{output_index:06d}")
+            task = self._annotations.get(
+                output_index,
+                self._dominant_episode_text(synced_text_values, fallback=f"episode_{output_index:06d}"),
+            )
             quality = self._episode_quality(steps)
             episodes.append({
                 "episode_index": output_index,
