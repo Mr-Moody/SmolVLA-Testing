@@ -150,13 +150,8 @@ def train_smolvla(
     if episodes:
         LOGGER.info("Episodes:  %s", episodes)
 
-    # resume=True requires an existing train_config.json in the output dir.
-    # For actual resume runs, pass the config path so lerobot can find it.
-    resume_config = output_dir / "train_config.json" if resume else None
-
     cfg = TrainPipelineConfig(
         resume=resume,
-        config_path=resume_config,
         dataset=DatasetConfig(
             repo_id=repo_id,
             root=root_arg,
@@ -181,6 +176,11 @@ def train_smolvla(
         save_freq=save_freq,
         eval_freq=eval_freq,
     )
+
+    # config_path is not a constructor arg — lerobot expects it set as an
+    # attribute when resume=True so validate() can find train_config.json.
+    if resume:
+        cfg.config_path = output_dir / "train_config.json"
 
     LOGGER.info("Starting SmolVLA training...")
 
