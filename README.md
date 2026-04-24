@@ -53,6 +53,13 @@ Common options:
 - `--vcodec`: output video codec (default: `h264`)
 - `--max-episodes`: limit exported episodes
 - `--max-steps-per-episode`: limit steps per episode
+- `--keep-blank-episodes`: disable blank-episode suppression
+- `--blank-max-steps`: short-episode threshold for blank suppression (default: `1000`)
+- `--min-gripper-command`: absolute gripper command threshold for activity detection (default: `0.1`)
+- `--min-gripper-width-span`: gripper width span threshold in meters (default: `0.002`)
+- `--episode-report`: write JSON report with episode quality metrics and suppression flags
+
+By default, the converter suppresses blank transition episodes that are short and show no gripper activity. This helps when `episode_start` markers are used as separators and include non-grasp repositioning segments.
 
 ### 2) Train SmolVLA
 
