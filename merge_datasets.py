@@ -31,9 +31,6 @@ import pyarrow.parquet as pq
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
 LOGGER = logging.getLogger(__name__)
 
-CHUNKS_SIZE = 1000  # episodes per chunk — must match lerobot default
-
-
 def load_info(dataset_root: Path) -> dict:
     path = dataset_root / "meta" / "info.json"
     with path.open() as f:
@@ -59,18 +56,30 @@ def write_jsonl(path: Path, rows: list[dict]) -> None:
             f.write(json.dumps(row) + "\n")
 
 
-def episode_chunk(episode_index: int) -> int:
-    return episode_index // CHUNKS_SIZE
+def ep_parquet_path(info: dict, root: Path, episode_index: int) -> Path:
+    """Resolve parquet path using the data_path template from info.json."""
+    chunks_size = info.get("chunks_size", 1000)
+    chunk = episode_index // chunks_size
+    template = info.get("data_path", "data/chunk-{chunk_index:03d}/episode_{episode_index:06d}.parquet")
+    rel_path = template.format(chunk_index=chunk, episode_index=episode_index)
+    return root / rel_path
 
 
-def ep_parquet_path(root: Path, episode_index: int) -> Path:
-    chunk = episode_chunk(episode_index)
-    return root / "data" / f"chunk-{chunk:03d}" / f"episode_{episode_index:06d}.parquet"
+def ep_video_path(info: dict, root: Path, video_key: str, episode_index: int) -> Path:
+    """Resolve video path using the video_path template from info.json."""
+    chunks_size = info.get("chunks_size", 1000)
+    chunk = episode_index // chunks_size
+    template = info.get("video_path", "videos/chunk-{chunk_index:03d}/{video_key}/episode_{episode_index:06d}.mp4")
+    rel_path = template.format(chunk_index=chunk, video_key=video_key, episode_index=episode_index)
+    return root / rel_path
 
 
-def ep_video_path(root: Path, video_key: str, episode_index: int) -> Path:
-    chunk = episode_chunk(episode_index)
-    return root / "videos" / f"chunk-{chunk:03d}" / video_key / f"episode_{episode_index:06d}.mp4"
+def get_video_keys(info: dict) -> list[str]:
+    """Extract video feature keys from info.json features dict."""
+    return [
+        k for k, v in info.get("features", {}).items()
+        if isinstance(v, dict) and v.get("dtype") == "video"
+    ]
 
 
 def link_or_copy(src: Path, dst: Path) -> None:
@@ -207,19 +216,14 @@ def merge(source_roots: list[Path], output_root: Path, force: bool) -> Path:
     stats_list: list[dict] = []
     frame_counts: list[int] = []
 
-    # Detect video keys from first source that has videos
-    video_keys: list[str] = []
-    for root in source_roots:
-        videos_root = root / "videos"
-        if videos_root.exists():
-            for chunk_dir in sorted(videos_root.iterdir()):
-                for vkey_dir in sorted(chunk_dir.iterdir()):
-                    if vkey_dir.is_dir():
-                        vk = vkey_dir.name
-                        if vk not in video_keys:
-                            video_keys.append(vk)
-
+    # Read video keys from info.json features (dtype == "video") — avoids
+    # filesystem structure assumptions that differ across lerobot versions.
+    video_keys: list[str] = get_video_keys(infos[0])
     LOGGER.info("Video keys: %s", video_keys)
+
+    # Use the path templates and chunks_size from the first source info.json.
+    # All sources must share the same format (validated above via fps/version checks).
+    src_info_ref = infos[0]
 
     for source_root, info in zip(source_roots, infos):
         src_episodes = load_jsonl(source_root / "meta" / "episodes.jsonl")
@@ -243,8 +247,8 @@ def merge(source_roots: list[Path], output_root: Path, force: bool) -> Path:
             global_ep_idx = global_episode_index
 
             # --- parquet ---
-            src_parquet = ep_parquet_path(source_root, local_ep_idx)
-            dst_parquet = ep_parquet_path(output_root, global_ep_idx)
+            src_parquet = ep_parquet_path(info, source_root, local_ep_idx)
+            dst_parquet = ep_parquet_path(src_info_ref, output_root, global_ep_idx)
             dst_parquet.parent.mkdir(parents=True, exist_ok=True)
 
             table = pq.read_table(src_parquet)
@@ -265,8 +269,8 @@ def merge(source_roots: list[Path], output_root: Path, force: bool) -> Path:
 
             # --- videos ---
             for vkey in video_keys:
-                src_video = ep_video_path(source_root, vkey, local_ep_idx)
-                dst_video = ep_video_path(output_root, vkey, global_ep_idx)
+                src_video = ep_video_path(info, source_root, vkey, local_ep_idx)
+                dst_video = ep_video_path(src_info_ref, output_root, vkey, global_ep_idx)
                 if src_video.exists():
                     link_or_copy(src_video, dst_video)
 
@@ -289,8 +293,9 @@ def merge(source_roots: list[Path], output_root: Path, force: bool) -> Path:
     # -------------------------------------------------------------------------
     write_jsonl(output_root / "meta" / "episodes.jsonl", merged_episodes)
 
+    chunks_size = src_info_ref.get("chunks_size", 1000)
     total_episodes = global_episode_index
-    total_chunks = max(1, (total_episodes + CHUNKS_SIZE - 1) // CHUNKS_SIZE)
+    total_chunks = max(1, (total_episodes + chunks_size - 1) // chunks_size)
     total_video_files = total_episodes * len(video_keys)
 
     merged_info = {
@@ -301,11 +306,11 @@ def merge(source_roots: list[Path], output_root: Path, force: bool) -> Path:
         "total_tasks": len(global_task_to_index),
         "total_videos": total_video_files,
         "total_chunks": total_chunks,
-        "chunks_size": CHUNKS_SIZE,
+        "chunks_size": chunks_size,
         "fps": fps,
         "splits": {"train": f"0:{total_episodes}"},
-        "data_path": "data/chunk-{chunk_index:03d}/episode_{episode_index:06d}.parquet",
-        "video_path": "videos/chunk-{chunk_index:03d}/{video_key}/episode_{episode_index:06d}.mp4",
+        "data_path": src_info_ref.get("data_path", "data/chunk-{chunk_index:03d}/episode_{episode_index:06d}.parquet"),
+        "video_path": src_info_ref.get("video_path", "videos/chunk-{chunk_index:03d}/{video_key}/episode_{episode_index:06d}.mp4"),
         "features": features,
     }
 
