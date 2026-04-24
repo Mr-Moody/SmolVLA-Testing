@@ -21,7 +21,7 @@ from bisect import bisect_left
 from pathlib import Path
 from typing import Any
 
-from flask import Flask, Response, jsonify, request
+from flask import Flask, Response, jsonify, request, send_file
 
 # ---------------------------------------------------------------------------
 # Add project root to path so dataset_utils can be imported directly
@@ -96,6 +96,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
     display: flex;
     flex-direction: column;
     min-width: 0;
+    position: relative;
   }
   .cam-label {
     font-size: 11px; color: #888; padding: 2px 6px;
@@ -105,6 +106,29 @@ HTML_PAGE = r"""<!DOCTYPE html>
     width: 100%; height: 100%; object-fit: contain;
     background: #000; display: block;
     flex: 1; min-height: 0;
+  }
+  .video-fallback {
+    position: absolute;
+    inset: 24px 0 0 0;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    padding: 16px;
+    background: rgba(0, 0, 0, 0.78);
+    color: #d8d8d8;
+    font-size: 13px;
+    line-height: 1.4;
+  }
+  .video-fallback.show { display: flex; }
+  .video-fallback a {
+    color: #7eb8ff;
+    text-decoration: underline;
+  }
+  .video-fallback strong {
+    display: block;
+    margin-bottom: 6px;
+    color: #f2f2f2;
   }
 
   /* ── Controls bar ── */
@@ -188,10 +212,12 @@ HTML_PAGE = r"""<!DOCTYPE html>
   <div class="cam-panel" id="panel-cam0">
     <div class="cam-label" id="label-cam0">camera 0</div>
     <video id="video0" preload="auto" playsinline></video>
+    <div class="video-fallback" id="fallback-cam0"></div>
   </div>
   <div class="cam-panel" id="panel-cam1">
     <div class="cam-label" id="label-cam1">camera 1</div>
     <video id="video1" preload="auto" playsinline></video>
+    <div class="video-fallback" id="fallback-cam1"></div>
   </div>
 </div>
 
@@ -230,6 +256,41 @@ let seekSuppressed = false; // prevent seekbar feedback loop
 const video0 = document.getElementById('video0');
 const video1 = document.getElementById('video1');
 const videos = [video0, video1];
+
+function mediaErrorName(code) {
+  if (code === 1) return 'MEDIA_ERR_ABORTED';
+  if (code === 2) return 'MEDIA_ERR_NETWORK';
+  if (code === 3) return 'MEDIA_ERR_DECODE';
+  if (code === 4) return 'MEDIA_ERR_SRC_NOT_SUPPORTED';
+  return 'UNKNOWN_ERROR';
+}
+
+function hideFallback(i) {
+  const el = document.getElementById(`fallback-cam${i}`);
+  if (!el) return;
+  el.classList.remove('show');
+  el.innerHTML = '';
+}
+
+function showFallback(i, camName, src, reason) {
+  const el = document.getElementById(`fallback-cam${i}`);
+  if (!el) return;
+  const safeCam = camName || `camera ${i}`;
+  const safeReason = reason || 'Playback failed.';
+  el.innerHTML = `<div><strong>${safeCam} could not be played</strong>${safeReason}<br><a href="${src}" target="_blank" rel="noopener">Open video directly</a></div>`;
+  el.classList.add('show');
+}
+
+videos.forEach((v, i) => {
+  v.addEventListener('loadstart', () => hideFallback(i));
+  v.addEventListener('loadeddata', () => hideFallback(i));
+  v.addEventListener('error', () => {
+    const camLabel = document.getElementById(`label-cam${i}`)?.textContent || `camera ${i}`;
+    const errCode = v.error ? v.error.code : 0;
+    const reason = `Browser media error: ${mediaErrorName(errCode)} (${errCode}).`;
+    showFallback(i, camLabel, v.currentSrc || v.src || '#', reason);
+  });
+});
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 function fmt(sec) {
@@ -306,6 +367,7 @@ function loadEpisode(idx) {
     if (labelEl) labelEl.textContent = cam;
     if (videoEl && panelEl) {
       panelEl.style.display = 'flex';
+      hideFallback(i);
       const src = `/video/${currentDataset}/${cam}`;
       if (videoEl.dataset.src !== src) {
         videoEl.dataset.src = src;
@@ -319,6 +381,7 @@ function loadEpisode(idx) {
   for (let i = camNames.length; i < 2; i++) {
     const panelEl = document.getElementById(`panel-cam${i}`);
     if (panelEl) panelEl.style.display = 'none';
+    hideFallback(i);
   }
 
   // Seek to episode start once enough data is available
@@ -662,58 +725,19 @@ def api_annotate(name: str, ep_idx: int):
 
 @app.route("/video/<dataset>/<camera>")
 def serve_video(dataset: str, camera: str):
-    """Stream an MP4 with Range support so the browser can seek."""
-    video_path = DATASETS_ROOT / dataset / "cameras" / camera / "rgb.mp4"
-    if not video_path.exists():
+    """Serve an MP4 with proper HTTP range support for browser playback."""
+    cam_dir = DATASETS_ROOT / dataset / "cameras" / camera
+    candidates = [
+        cam_dir / "rgb_h264.mp4",      # browser-compatible transcode (preferred)
+        cam_dir / "rgb_browser.mp4",   # optional alternative name
+        cam_dir / "rgb.mp4",           # original recording
+    ]
+    video_path = next((p for p in candidates if p.exists()), None)
+    if video_path is None:
         return Response("not found", status=404)
 
-    file_size = video_path.stat().st_size
-    range_header = request.headers.get("Range")
-
-    if range_header:
-        # Parse "bytes=start-end"
-        byte_range = range_header.replace("bytes=", "")
-        parts = byte_range.split("-")
-        start = int(parts[0]) if parts[0] else 0
-        end = int(parts[1]) if len(parts) > 1 and parts[1] else file_size - 1
-        end = min(end, file_size - 1)
-        length = end - start + 1
-
-        def generate():
-            with open(video_path, "rb") as fh:
-                fh.seek(start)
-                remaining = length
-                chunk = 1 << 20  # 1 MB chunks
-                while remaining > 0:
-                    data = fh.read(min(chunk, remaining))
-                    if not data:
-                        break
-                    remaining -= len(data)
-                    yield data
-
-        headers = {
-            "Content-Range": f"bytes {start}-{end}/{file_size}",
-            "Accept-Ranges": "bytes",
-            "Content-Length": str(length),
-            "Content-Type": "video/mp4",
-        }
-        return Response(generate(), status=206, headers=headers)
-
-    # Full file (no Range header)
-    def generate_full():
-        with open(video_path, "rb") as fh:
-            while True:
-                data = fh.read(1 << 20)
-                if not data:
-                    break
-                yield data
-
-    headers = {
-        "Accept-Ranges": "bytes",
-        "Content-Length": str(file_size),
-        "Content-Type": "video/mp4",
-    }
-    return Response(generate_full(), status=200, headers=headers)
+    # Let Werkzeug handle RFC-compliant Range and conditional requests.
+    return send_file(video_path, mimetype="video/mp4", conditional=True)
 
 
 # ---------------------------------------------------------------------------
