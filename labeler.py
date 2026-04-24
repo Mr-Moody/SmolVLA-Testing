@@ -14,6 +14,7 @@ artifacts remain under raw_datasets/<name>/cameras/<camera>/.
 from __future__ import annotations
 
 import argparse
+import json
 import re
 import shutil
 import subprocess
@@ -53,6 +54,13 @@ _TRANSCODE_LOCKS_GUARD = threading.Lock()
 _VIDEO_STATUS: dict[tuple[str, str], dict[str, Any]] = {}
 _VIDEO_STATUS_GUARD = threading.Lock()
 _FFMPEG_TIME_RE = re.compile(r"time=(\d+):(\d+):(\d+(?:\.\d+)?)")
+_EPISODE_MARKER_EVENTS = {
+  "episode_start",
+  "episode_end",
+  "episode_stop",
+  "episode_finish",
+  "episode_finished",
+}
 
 
 def _get_transcode_lock(video_path: Path) -> threading.Lock:
@@ -292,6 +300,81 @@ def _resolve_video_path(dataset: str, camera: str) -> Path | None:
   return None
 
 
+def _normalize_episode_event_name(row: dict[str, Any]) -> str | None:
+  for key in ("event", "episode_event"):
+    value = row.get(key)
+    if isinstance(value, str) and value.strip():
+      return value.strip().lower()
+  return None
+
+
+def _episode_marker_row_indices(episode_rows: list[dict[str, Any]]) -> list[int]:
+  indices: list[int] = []
+  for row_idx, row in enumerate(episode_rows):
+    name = _normalize_episode_event_name(row)
+    if name not in _EPISODE_MARKER_EVENTS:
+      continue
+    if row.get("robot_timestamp_ns") is None:
+      continue
+    indices.append(row_idx)
+  return indices
+
+
+def _write_annotations(dataset_dir: Path, annotations: dict[int, str]) -> None:
+  path = dataset_dir / "annotations.jsonl"
+  with path.open("w", encoding="utf-8") as handle:
+    for episode_index in sorted(annotations):
+      handle.write(json.dumps({
+        "episode_index": episode_index,
+        "task": annotations[episode_index],
+      }) + "\n")
+
+
+def _delete_episode_marker(dataset_dir: Path, ep_idx: int) -> None:
+  robot_rows = read_jsonl(dataset_dir / "robot.jsonl")
+  episode_rows = read_jsonl(dataset_dir / "episode_events.jsonl")
+  boundaries = find_episode_boundaries(robot_rows, episode_rows)
+
+  if ep_idx < 0 or ep_idx >= len(boundaries):
+    raise ValueError("episode index out of range")
+
+  marker_indices = _episode_marker_row_indices(episode_rows)
+  if not marker_indices:
+    raise ValueError("no episode markers found in cleaned dataset")
+
+  marker_pos: int
+  if len(marker_indices) == len(boundaries):
+    marker_pos = ep_idx
+  elif len(marker_indices) == len(boundaries) - 1:
+    if ep_idx == 0:
+      raise ValueError("cannot delete episode 0 marker because first boundary is implicit")
+    marker_pos = ep_idx - 1
+  else:
+    start_robot_idx, _ = boundaries[ep_idx]
+    target_ts = infer_timestamp_ns(robot_rows[start_robot_idx])
+    marker_pos = min(
+      range(len(marker_indices)),
+      key=lambda pos: abs(int(episode_rows[marker_indices[pos]].get("robot_timestamp_ns", target_ts)) - target_ts),
+    )
+
+  del episode_rows[marker_indices[marker_pos]]
+
+  events_path = dataset_dir / "episode_events.jsonl"
+  with events_path.open("w", encoding="utf-8") as handle:
+    for row in episode_rows:
+      handle.write(json.dumps(row) + "\n")
+
+  annotations = load_annotations(dataset_dir)
+  if annotations:
+    reindexed: dict[int, str] = {}
+    for old_idx, task in annotations.items():
+      if old_idx == ep_idx:
+        continue
+      new_idx = old_idx - 1 if old_idx > ep_idx else old_idx
+      reindexed[new_idx] = task
+    _write_annotations(dataset_dir, reindexed)
+
+
 def _discover_datasets() -> list[dict[str, Any]]:
   """Return sorted list of {name, episode_count, labeled_count} dicts."""
   result = []
@@ -418,6 +501,20 @@ def api_annotate(name: str, ep_idx: int):
     try:
         save_annotation(dataset_dir, ep_idx, task)
         return jsonify({"ok": True})
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+
+
+@app.route("/api/datasets/<name>/episodes/<int:ep_idx>", methods=["DELETE"])
+def api_delete_episode(name: str, ep_idx: int):
+    dataset_dir = CLEANED_DATASETS_ROOT / name
+    if not dataset_dir.exists():
+        return jsonify({"error": "dataset not found"}), 404
+    try:
+        _delete_episode_marker(dataset_dir, ep_idx)
+        return jsonify({"ok": True})
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500
 
