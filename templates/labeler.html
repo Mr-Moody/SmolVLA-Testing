@@ -1,0 +1,703 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Episode Labeler</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: system-ui, sans-serif; background: #0f0f0f; color: #e0e0e0; height: 100vh; display: flex; flex-direction: column; }
+
+  /* ── Header bar ── */
+  #header {
+    background: #1a1a1a;
+    border-bottom: 1px solid #333;
+    padding: 10px 16px;
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    flex-shrink: 0;
+    flex-wrap: wrap;
+  }
+  #header label { font-size: 13px; color: #aaa; }
+  select, input[type=number], input[type=text], textarea {
+    background: #2a2a2a; color: #e0e0e0; border: 1px solid #444;
+    border-radius: 4px; padding: 4px 8px; font-size: 13px;
+  }
+  select:focus, input:focus, textarea:focus { outline: none; border-color: #4a9eff; }
+  button {
+    background: #2a2a2a; color: #e0e0e0; border: 1px solid #444;
+    border-radius: 4px; padding: 5px 12px; font-size: 13px; cursor: pointer;
+  }
+  button:hover { background: #3a3a3a; border-color: #555; }
+  button:disabled { opacity: 0.4; cursor: default; }
+  button.primary { background: #1a6fd4; border-color: #2a7fe4; }
+  button.primary:hover { background: #2a7fe4; }
+  button.danger { background: #7f1d1d; border-color: #a72828; }
+  button.danger:hover { background: #a72828; }
+
+  #ep-info { margin-left: auto; font-size: 13px; color: #aaa; white-space: nowrap; }
+  #progress-badge {
+    font-size: 12px; padding: 2px 8px; border-radius: 10px;
+    background: #1a3d1a; color: #6ddc6d; border: 1px solid #2a5a2a;
+  }
+
+  /* ── Video grid ── */
+  #video-grid {
+    display: flex;
+    flex: 1;
+    min-height: 0;
+    gap: 4px;
+    padding: 4px;
+    background: #0a0a0a;
+  }
+  .cam-panel {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    position: relative;
+  }
+  .cam-label {
+    font-size: 11px; color: #888; padding: 2px 6px;
+    background: #1a1a1a; border-radius: 4px 4px 0 0; text-align: center;
+  }
+  video {
+    width: 100%; height: 100%; object-fit: contain;
+    background: #000; display: block;
+    flex: 1; min-height: 0;
+  }
+  .video-fallback {
+    position: absolute;
+    inset: 24px 0 0 0;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    padding: 16px;
+    background: rgba(0, 0, 0, 0.78);
+    color: #d8d8d8;
+    font-size: 13px;
+    line-height: 1.4;
+  }
+  .video-fallback.show { display: flex; }
+  .video-fallback a {
+    color: #7eb8ff;
+    text-decoration: underline;
+  }
+  .video-fallback strong {
+    display: block;
+    margin-bottom: 6px;
+    color: #f2f2f2;
+  }
+  .video-progress-wrap {
+    width: min(320px, 80vw);
+    margin: 8px auto 6px;
+    height: 8px;
+    background: #262626;
+    border: 1px solid #3a3a3a;
+    border-radius: 6px;
+    overflow: hidden;
+  }
+  .video-progress-fill {
+    height: 100%;
+    width: 0%;
+    background: linear-gradient(90deg, #3f84d6, #6cb2ff);
+    transition: width 0.2s ease;
+  }
+  .video-progress-text {
+    font-size: 12px;
+    color: #a8c8ff;
+  }
+
+  /* ── Controls bar ── */
+  #controls {
+    background: #1a1a1a;
+    border-top: 1px solid #333;
+    padding: 8px 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    flex-shrink: 0;
+  }
+  #seek-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  #seekbar {
+    flex: 1;
+    height: 4px;
+    accent-color: #4a9eff;
+    cursor: pointer;
+  }
+  #time-display { font-size: 12px; color: #aaa; min-width: 90px; text-align: right; font-variant-numeric: tabular-nums; }
+  #btn-row { display: flex; gap: 8px; align-items: center; }
+
+  /* ── Annotation area ── */
+  #annotation-area {
+    background: #141414;
+    border-top: 1px solid #333;
+    padding: 10px 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    flex-shrink: 0;
+  }
+  #annotation-area label { font-size: 12px; color: #aaa; }
+  #task-input {
+    width: 100%; resize: vertical; min-height: 52px;
+    font-size: 14px; padding: 6px 10px; line-height: 1.4;
+  }
+  #submit-row { display: flex; align-items: center; gap: 10px; }
+  #status-msg { font-size: 12px; transition: opacity 0.4s; }
+  #status-msg.ok  { color: #6ddc6d; }
+  #status-msg.err { color: #f06060; }
+  #ep-annotation-status { font-size: 12px; color: #888; }
+
+  /* ── Loading overlay ── */
+  #loading {
+    position: fixed; inset: 0; background: rgba(0,0,0,0.75);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 16px; color: #aaa; z-index: 100;
+  }
+  #loading.hidden { display: none; }
+</style>
+</head>
+<body>
+
+<div id="loading">Loading datasets…</div>
+
+<!-- ── Header ── -->
+<div id="header">
+  <label for="dataset-select">Dataset</label>
+  <select id="dataset-select"></select>
+
+  <span id="progress-badge">0 / 0 labeled</span>
+
+  <button id="btn-prev" disabled>&#9664; Prev</button>
+
+  <label for="jump-input">Jump to</label>
+  <input id="jump-input" type="number" min="0" step="1" style="width:70px" placeholder="0">
+  <button id="btn-go">Go</button>
+
+  <button id="btn-next" disabled>Next &#9654;</button>
+
+  <span id="ep-info">Episode — / —</span>
+</div>
+
+<!-- ── Video grid ── -->
+<div id="video-grid">
+  <div class="cam-panel" id="panel-cam0">
+    <div class="cam-label" id="label-cam0">camera 0</div>
+    <video id="video0" preload="auto" playsinline></video>
+    <div class="video-fallback" id="fallback-cam0"></div>
+  </div>
+  <div class="cam-panel" id="panel-cam1">
+    <div class="cam-label" id="label-cam1">camera 1</div>
+    <video id="video1" preload="auto" playsinline></video>
+    <div class="video-fallback" id="fallback-cam1"></div>
+  </div>
+</div>
+
+<!-- ── Transport controls ── -->
+<div id="controls">
+  <div id="seek-row">
+    <input id="seekbar" type="range" min="0" max="1000" value="0" step="1">
+    <span id="time-display">0:00 / 0:00</span>
+  </div>
+  <div id="btn-row">
+    <button id="btn-playpause">&#9654; Play</button>
+    <button id="btn-skip-back">&#8249;&#8249; 5s</button>
+    <button id="btn-skip-fwd">5s &#8250;&#8250;</button>
+  </div>
+</div>
+
+<!-- ── Annotation area ── -->
+<div id="annotation-area">
+  <label for="task-input">Task prompt <span id="ep-annotation-status"></span></label>
+  <textarea id="task-input" placeholder="Describe the action in this episode…"></textarea>
+  <div id="submit-row">
+    <button id="btn-submit" class="primary">Submit Label</button>
+    <button id="btn-delete" class="danger">Delete Episode</button>
+    <span id="status-msg"></span>
+  </div>
+</div>
+
+<script>
+// ── State ──────────────────────────────────────────────────────────────────
+let datasets = [];          // [{name, episode_count, labeled_count}]
+let episodes = [];          // [{index, cameras:{name:{start_s, end_s}}, annotation}]
+let currentDataset = null;
+let currentEpIdx = 0;       // index into episodes[]
+let isPlaying = false;
+let seekSuppressed = false; // prevent seekbar feedback loop
+let videoLoadGeneration = 0;
+const videoStatusPollers = [null, null];
+
+const video0 = document.getElementById('video0');
+const video1 = document.getElementById('video1');
+const videos = [video0, video1];
+
+function mediaErrorName(code) {
+  if (code === 1) return 'MEDIA_ERR_ABORTED';
+  if (code === 2) return 'MEDIA_ERR_NETWORK';
+  if (code === 3) return 'MEDIA_ERR_DECODE';
+  if (code === 4) return 'MEDIA_ERR_SRC_NOT_SUPPORTED';
+  return 'UNKNOWN_ERROR';
+}
+
+function hideFallback(i) {
+  const el = document.getElementById(`fallback-cam${i}`);
+  if (!el) return;
+  el.classList.remove('show');
+  el.innerHTML = '';
+}
+
+function showFallback(i, camName, src, reason) {
+  const el = document.getElementById(`fallback-cam${i}`);
+  if (!el) return;
+  const safeCam = camName || `camera ${i}`;
+  const safeReason = reason || 'Playback failed.';
+  el.innerHTML = `<div><strong>${safeCam} could not be played</strong>${safeReason}<br><a href="${src}" target="_blank" rel="noopener">Open video directly</a></div>`;
+  el.classList.add('show');
+}
+
+function showConversionProgress(i, camName, progress, message, src) {
+  const videoEl = document.getElementById(`video${i}`);
+  if (videoEl && videoEl.readyState >= 2 && (videoEl.currentSrc || videoEl.src)) {
+    hideFallback(i);
+    return;
+  }
+  const el = document.getElementById(`fallback-cam${i}`);
+  if (!el) return;
+  const safeCam = camName || `camera ${i}`;
+  const pct = Math.max(0, Math.min(100, Number.isFinite(progress) ? progress : 0));
+  const text = message || `Converting... ${Math.round(pct)}%`;
+  el.innerHTML = `<div><strong>Preparing ${safeCam} for web playback</strong><div class="video-progress-wrap"><div class="video-progress-fill" style="width:${pct}%"></div></div><div class="video-progress-text">${text}</div><a href="${src}" target="_blank" rel="noopener">Open original video</a></div>`;
+  el.classList.add('show');
+}
+
+function clearVideoPoller(i) {
+  if (videoStatusPollers[i]) {
+    clearInterval(videoStatusPollers[i]);
+    videoStatusPollers[i] = null;
+  }
+}
+
+async function prepareAndLoadCamera(cam, i, generation) {
+  const videoEl = document.getElementById(`video${i}`);
+  const src = `/video/${currentDataset}/${cam}`;
+  const statusUrl = `/api/video/${currentDataset}/${cam}/status`;
+  const prepareUrl = `/api/video/${currentDataset}/${cam}/prepare`;
+  if (!videoEl) return;
+
+  clearVideoPoller(i);
+  if (!(videoEl.readyState >= 2 && (videoEl.currentSrc || videoEl.src))) {
+    showConversionProgress(i, cam, 0, 'Checking video format...', src);
+  } else {
+    hideFallback(i);
+  }
+
+  try {
+    await fetch(prepareUrl, { method: 'POST' });
+  } catch {
+    // Keep polling status; route may still become available.
+  }
+
+  const applyReadySource = () => {
+    if (videoEl.dataset.src !== src) {
+      videoEl.dataset.src = src;
+      videoEl.src = src;
+      videoEl.load();
+    }
+    hideFallback(i);
+  };
+
+  videoStatusPollers[i] = setInterval(async () => {
+    if (generation !== videoLoadGeneration) {
+      clearVideoPoller(i);
+      return;
+    }
+    try {
+      const res = await fetch(statusUrl);
+      if (!res.ok) return;
+      const status = await res.json();
+      const state = status.state || 'pending';
+      const progress = Number(status.progress || 0);
+      const message = status.message || '';
+
+      // If we already have a decodable frame, never cover it with the fallback UI.
+      if (videoEl.readyState >= 2 && (videoEl.currentSrc || videoEl.src)) {
+        hideFallback(i);
+      }
+
+      if (state === 'ready') {
+        clearVideoPoller(i);
+        applyReadySource();
+        return;
+      }
+      if (state === 'source_only') {
+        clearVideoPoller(i);
+        applyReadySource();
+        return;
+      }
+      if (state === 'missing') {
+        clearVideoPoller(i);
+        showFallback(i, cam, src, 'Video file rgb.mp4 was not found.');
+        return;
+      }
+      if (state === 'error') {
+        clearVideoPoller(i);
+        showFallback(i, cam, src, `Conversion failed: ${message || 'unknown error'}`);
+        return;
+      }
+
+      showConversionProgress(i, cam, progress, message || `Converting... ${Math.round(progress)}%`, src);
+    } catch {
+      showConversionProgress(i, cam, 0, 'Waiting for converter...', src);
+    }
+  }, 350);
+}
+
+videos.forEach((v, i) => {
+  v.addEventListener('loadstart', () => hideFallback(i));
+  v.addEventListener('loadeddata', () => hideFallback(i));
+  v.addEventListener('error', () => {
+    const camLabel = document.getElementById(`label-cam${i}`)?.textContent || `camera ${i}`;
+    const errCode = v.error ? v.error.code : 0;
+    const reason = `Browser media error: ${mediaErrorName(errCode)} (${errCode}).`;
+    showFallback(i, camLabel, v.currentSrc || v.src || '#', reason);
+  });
+});
+
+// ── Helpers ────────────────────────────────────────────────────────────────
+function fmt(sec) {
+  if (!isFinite(sec)) return '0:00';
+  const m = Math.floor(sec / 60);
+  const s = Math.floor(sec % 60).toString().padStart(2, '0');
+  return `${m}:${s}`;
+}
+
+function epDuration() {
+  if (!episodes.length) return 0;
+  const ep = episodes[currentEpIdx];
+  const cams = Object.values(ep.cameras);
+  if (!cams.length) return 0;
+  return cams[0].end_s - cams[0].start_s;
+}
+
+function primaryStart() {
+  if (!episodes.length) return 0;
+  const ep = episodes[currentEpIdx];
+  const cams = Object.values(ep.cameras);
+  return cams.length ? cams[0].start_s : 0;
+}
+
+function primaryEnd() {
+  if (!episodes.length) return 0;
+  const ep = episodes[currentEpIdx];
+  const cams = Object.values(ep.cameras);
+  return cams.length ? cams[0].end_s : 0;
+}
+
+// Returns the current playback position within the episode (0 … duration)
+function relativeTime() {
+  return Math.max(0, video0.currentTime - primaryStart());
+}
+
+// ── Dataset loading ─────────────────────────────────────────────────────────
+async function loadDatasets() {
+  const res = await fetch('/api/datasets');
+  datasets = await res.json();
+  const sel = document.getElementById('dataset-select');
+  sel.innerHTML = datasets.map(d =>
+    `<option value="${d.name}">${d.name} (${d.episode_count} episodes)</option>`
+  ).join('');
+  document.getElementById('loading').classList.add('hidden');
+  if (datasets.length) selectDataset(datasets[0].name);
+}
+
+async function selectDataset(name) {
+  currentDataset = name;
+  document.getElementById('loading').classList.remove('hidden');
+  const res = await fetch(`/api/datasets/${name}/episodes`);
+  episodes = await res.json();
+  document.getElementById('loading').classList.add('hidden');
+
+  if (!episodes.length) {
+    currentEpIdx = 0;
+    document.getElementById('ep-info').textContent = 'Episode 0 / 0';
+    document.getElementById('btn-prev').disabled = true;
+    document.getElementById('btn-next').disabled = true;
+    document.getElementById('btn-delete').disabled = true;
+    document.getElementById('task-input').value = '';
+    document.getElementById('ep-annotation-status').textContent = '(unlabeled)';
+    pauseAll();
+    updateProgressBadge();
+    return;
+  }
+
+  currentEpIdx = 0;
+  loadEpisode(0);
+  updateProgressBadge();
+}
+
+// ── Episode loading ─────────────────────────────────────────────────────────
+function loadEpisode(idx) {
+  if (!episodes.length) return;
+  idx = Math.max(0, Math.min(idx, episodes.length - 1));
+  currentEpIdx = idx;
+  videoLoadGeneration += 1;
+  const generation = videoLoadGeneration;
+
+  const ep = episodes[idx];
+  const camNames = Object.keys(ep.cameras);
+
+  // Update camera labels and video sources
+  camNames.forEach((cam, i) => {
+    const labelEl = document.getElementById(`label-cam${i}`);
+    const videoEl = document.getElementById(`video${i}`);
+    const panelEl = document.getElementById(`panel-cam${i}`);
+    if (labelEl) labelEl.textContent = cam;
+    if (videoEl && panelEl) {
+      panelEl.style.display = 'flex';
+      hideFallback(i);
+      prepareAndLoadCamera(cam, i, generation);
+    }
+  });
+
+  // Hide unused camera panels
+  for (let i = camNames.length; i < 2; i++) {
+    const panelEl = document.getElementById(`panel-cam${i}`);
+    if (panelEl) panelEl.style.display = 'none';
+    clearVideoPoller(i);
+    hideFallback(i);
+  }
+
+  // Seek to episode start once enough data is available
+  videos.forEach((v, i) => {
+    const cam = camNames[i];
+    if (!cam) return;
+    const info = ep.cameras[cam];
+    const seekTo = () => {
+      v.currentTime = info.start_s;
+    };
+    if (v.readyState >= 1) {
+      seekTo();
+    } else {
+      v.addEventListener('loadedmetadata', seekTo, { once: true });
+    }
+  });
+
+  // Update UI
+  const epInfo = document.getElementById('ep-info');
+  epInfo.textContent = `Episode ${idx + 1} / ${episodes.length}`;
+  document.getElementById('btn-prev').disabled = idx === 0;
+  document.getElementById('btn-next').disabled = idx === episodes.length - 1;
+  document.getElementById('btn-delete').disabled = false;
+  document.getElementById('jump-input').value = idx;
+
+  // Load existing annotation
+  const taskInput = document.getElementById('task-input');
+  const annoStatus = document.getElementById('ep-annotation-status');
+  const statusMsg = document.getElementById('status-msg');
+  statusMsg.textContent = '';
+  if (ep.annotation) {
+    taskInput.value = ep.annotation;
+    annoStatus.textContent = '(labeled)';
+    annoStatus.style.color = '#6ddc6d';
+  } else {
+    taskInput.value = '';
+    annoStatus.textContent = '(unlabeled)';
+    annoStatus.style.color = '#888';
+  }
+
+  // Reset playback state
+  pauseAll();
+  updateSeekbar();
+}
+
+// ── Playback controls ──────────────────────────────────────────────────────
+function playAll() {
+  videos.forEach(v => { if (v.src) v.play().catch(() => {}); });
+  document.getElementById('btn-playpause').textContent = '❚❚ Pause';
+  isPlaying = true;
+}
+
+function pauseAll() {
+  videos.forEach(v => v.pause());
+  document.getElementById('btn-playpause').textContent = '▶ Play';
+  isPlaying = false;
+}
+
+function togglePlay() {
+  if (isPlaying) pauseAll(); else playAll();
+}
+
+function skipSeconds(delta) {
+  if (!episodes.length) return;
+  const ep = episodes[currentEpIdx];
+  const camNames = Object.keys(ep.cameras);
+  const primaryCam = camNames[0];
+  if (!primaryCam) return;
+  const info = ep.cameras[primaryCam];
+  const newTime = Math.max(info.start_s, Math.min(video0.currentTime + delta, info.end_s));
+  const offset = newTime - video0.currentTime;
+  videos.forEach((v, i) => {
+    const cam = camNames[i];
+    if (!cam) return;
+    v.currentTime = Math.max(ep.cameras[cam].start_s, Math.min(v.currentTime + offset, ep.cameras[cam].end_s));
+  });
+}
+
+function seekToFraction(frac) {
+  if (!episodes.length) return;
+  const ep = episodes[currentEpIdx];
+  const camNames = Object.keys(ep.cameras);
+  camNames.forEach((cam, i) => {
+    const v = videos[i];
+    if (!v) return;
+    const info = ep.cameras[cam];
+    v.currentTime = info.start_s + frac * (info.end_s - info.start_s);
+  });
+}
+
+// ── Seekbar sync ──────────────────────────────────────────────────────────
+function updateSeekbar() {
+  if (seekSuppressed) return;
+  const dur = epDuration();
+  const rel = relativeTime();
+  const seekbar = document.getElementById('seekbar');
+  seekbar.value = dur > 0 ? Math.round((rel / dur) * 1000) : 0;
+  document.getElementById('time-display').textContent = `${fmt(rel)} / ${fmt(dur)}`;
+}
+
+function updateProgressBadge() {
+  const ds = datasets.find(d => d.name === currentDataset);
+  if (!ds) return;
+  const labeled = episodes.filter(e => e.annotation).length;
+  document.getElementById('progress-badge').textContent = `${labeled} / ${episodes.length} labeled`;
+}
+
+// ── Annotation submit ─────────────────────────────────────────────────────
+async function submitAnnotation() {
+  if (!currentDataset || !episodes.length) return;
+  const task = document.getElementById('task-input').value.trim();
+  if (!task) {
+    showStatus('Please enter a task prompt.', false);
+    return;
+  }
+  const ep = episodes[currentEpIdx];
+  const res = await fetch(`/api/datasets/${currentDataset}/episodes/${ep.index}/annotate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ task }),
+  });
+  if (res.ok) {
+    ep.annotation = task;
+    const annoStatus = document.getElementById('ep-annotation-status');
+    annoStatus.textContent = '(labeled)';
+    annoStatus.style.color = '#6ddc6d';
+    updateProgressBadge();
+    showStatus('Saved!', true);
+  } else {
+    const body = await res.json().catch(() => ({}));
+    showStatus('Error: ' + (body.error || res.statusText), false);
+  }
+}
+
+async function deleteEpisode() {
+  if (!currentDataset || !episodes.length) return;
+  const ep = episodes[currentEpIdx];
+  const confirmed = window.confirm(`Delete episode ${ep.index} marker from cleaned dataset only?`);
+  if (!confirmed) return;
+
+  const previousIdx = currentEpIdx;
+  const res = await fetch(`/api/datasets/${currentDataset}/episodes/${ep.index}`, {
+    method: 'DELETE',
+  });
+
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    showStatus('Error: ' + (body.error || res.statusText), false);
+    return;
+  }
+
+  await selectDataset(currentDataset);
+  if (episodes.length) {
+    loadEpisode(Math.min(Math.max(0, previousIdx - 1), episodes.length - 1));
+    showStatus('Episode marker deleted from cleaned dataset.', true);
+  } else {
+    showStatus('Episode marker deleted. No episodes remaining.', true);
+  }
+}
+
+function showStatus(msg, ok) {
+  const el = document.getElementById('status-msg');
+  el.textContent = msg;
+  el.className = ok ? 'ok' : 'err';
+  el.style.opacity = '1';
+  setTimeout(() => { el.style.opacity = '0'; }, 3000);
+}
+
+// ── Event wiring ──────────────────────────────────────────────────────────
+document.getElementById('dataset-select').addEventListener('change', e => {
+  selectDataset(e.target.value);
+});
+document.getElementById('btn-prev').addEventListener('click', () => loadEpisode(currentEpIdx - 1));
+document.getElementById('btn-next').addEventListener('click', () => loadEpisode(currentEpIdx + 1));
+document.getElementById('btn-go').addEventListener('click', () => {
+  const v = parseInt(document.getElementById('jump-input').value, 10);
+  if (!isNaN(v)) loadEpisode(v);
+});
+document.getElementById('jump-input').addEventListener('keydown', e => {
+  if (e.key === 'Enter') document.getElementById('btn-go').click();
+});
+document.getElementById('btn-playpause').addEventListener('click', togglePlay);
+document.getElementById('btn-skip-back').addEventListener('click', () => skipSeconds(-5));
+document.getElementById('btn-skip-fwd').addEventListener('click', () => skipSeconds(5));
+document.getElementById('btn-submit').addEventListener('click', submitAnnotation);
+document.getElementById('btn-delete').addEventListener('click', deleteEpisode);
+
+// Keyboard shortcuts
+document.addEventListener('keydown', e => {
+  if (e.target.tagName === 'TEXTAREA' || e.target.tagName === 'INPUT') return;
+  if (e.code === 'Space') { e.preventDefault(); togglePlay(); }
+  if (e.code === 'ArrowLeft') skipSeconds(-5);
+  if (e.code === 'ArrowRight') skipSeconds(5);
+  if (e.code === 'ArrowUp') loadEpisode(currentEpIdx - 1);
+  if (e.code === 'ArrowDown') loadEpisode(currentEpIdx + 1);
+});
+
+// Seekbar interaction
+const seekbar = document.getElementById('seekbar');
+seekbar.addEventListener('mousedown', () => { seekSuppressed = true; });
+seekbar.addEventListener('input', () => {
+  seekToFraction(seekbar.value / 1000);
+  const dur = epDuration();
+  document.getElementById('time-display').textContent = `${fmt((seekbar.value / 1000) * dur)} / ${fmt(dur)}`;
+});
+seekbar.addEventListener('mouseup', () => { seekSuppressed = false; });
+seekbar.addEventListener('touchend', () => { seekSuppressed = false; });
+
+// video0 drives the seekbar and enforces episode bounds
+video0.addEventListener('timeupdate', () => {
+  const ep = episodes[currentEpIdx];
+  if (!ep) return;
+  const camNames = Object.keys(ep.cameras);
+  const primaryCam = camNames[0];
+  if (!primaryCam) return;
+  const end = ep.cameras[primaryCam].end_s;
+  if (video0.currentTime >= end - 0.05) {
+    pauseAll();
+    video0.currentTime = end;
+  }
+  updateSeekbar();
+});
+
+// ── Boot ──────────────────────────────────────────────────────────────────
+loadDatasets();
+</script>
+</body>
+</html>
