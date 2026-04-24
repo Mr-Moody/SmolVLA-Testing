@@ -156,6 +156,35 @@ def _normalize_event_name(row: dict[str, Any]) -> str | None:
     return None
 
 
+def load_annotations(dataset_dir: Path) -> dict[int, str]:
+    """Load episode-index → task string from annotations.jsonl."""
+    path = dataset_dir / "annotations.jsonl"
+    if not path.exists():
+        return {}
+    result: dict[int, str] = {}
+    for row in read_jsonl(path):
+        if "episode_index" in row and "task" in row:
+            result[int(row["episode_index"])] = row["task"]
+    return result
+
+
+def save_annotation(dataset_dir: Path, episode_index: int, task: str) -> None:
+    """Write/update annotation for one episode in annotations.jsonl (last write wins per episode)."""
+    import datetime
+    path = dataset_dir / "annotations.jsonl"
+    existing: dict[int, Any] = {}
+    if path.exists():
+        for row in read_jsonl(path):
+            if "episode_index" in row:
+                existing[int(row["episode_index"])] = row
+    existing[episode_index] = {
+        "episode_index": episode_index,
+        "task": task,
+        "annotated_at": datetime.datetime.utcnow().isoformat(),
+    }
+    write_jsonl(path, list(existing.values()))
+
+
 def find_episode_boundaries(
     robot_rows: list[dict[str, Any]],
     episode_rows: list[dict[str, Any]],
