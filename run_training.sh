@@ -321,6 +321,9 @@ trap "kill ${SYNC_PID} 2>/dev/null; rescue_checkpoints" EXIT
 #   3. Download SmolVLA base weights to HF_HOME (scratch cache)
 #   4. Write checkpoints and logs to SCRATCH_OUTPUT_DIR (fast scratch NVMe)
 
+RESUME_FLAG=""
+[[ "${RESUME}" == "true" ]] && RESUME_FLAG="--resume"
+
 TRAIN_CMD="cd ${LEROBOT_ROOT} && uv run python ${SMOLVLA_REPO}/main.py \
     --dataset-root ${DATASET_ROOT_FLAGS} \
     --lerobot-root ${LEROBOT_ROOT} \
@@ -334,6 +337,7 @@ TRAIN_CMD="cd ${LEROBOT_ROOT} && uv run python ${SMOLVLA_REPO}/main.py \
     --seed ${SEED} \
     --device cuda \
     --eval-freq 0 \
+    ${RESUME_FLAG} \
     ${AMP_FLAG}"
 
 echo "Training command:"

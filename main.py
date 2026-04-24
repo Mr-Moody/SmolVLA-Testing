@@ -112,6 +112,7 @@ def train_smolvla(
     eval_freq: int,
     seed: int,
     use_amp: bool,
+    resume: bool,
     episodes: list[int] | None,
     job_name: str | None,
     push_to_hub: bool,
@@ -149,8 +150,13 @@ def train_smolvla(
     if episodes:
         LOGGER.info("Episodes:  %s", episodes)
 
+    # resume=True requires an existing train_config.json in the output dir.
+    # For actual resume runs, pass the config path so lerobot can find it.
+    resume_config = output_dir / "train_config.json" if resume else None
+
     cfg = TrainPipelineConfig(
-        resume=True,  # lerobot starts fresh if no checkpoints exist; run_training.sh guards against unintended overwrites
+        resume=resume,
+        config_path=resume_config,
         dataset=DatasetConfig(
             repo_id=repo_id,
             root=root_arg,
@@ -233,6 +239,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=None,
         help="Optional comma-separated subset of episode indices, e.g. 0,1,2",
     )
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="Resume from the last checkpoint in --output-dir (requires a train_config.json there).",
+    )
     parser.add_argument("--job-name", type=str, default=None, help="Optional run name.")
     parser.add_argument(
         "--push-to-hub",
@@ -258,6 +269,7 @@ def main() -> None:
     train_smolvla(
         dataset_roots=dataset_roots,
         lerobot_root=lerobot_root,
+        resume=args.resume,
         policy_path=args.policy_path,
         output_dir=output_dir,
         batch_size=args.batch_size,
