@@ -108,7 +108,7 @@ POLICY_PATH="lerobot/smolvla_base"
 BATCH_SIZE=8
 STEPS=20000
 NUM_WORKERS=4
-SAVE_FREQ=1000    # checkpoint every N steps
+SAVE_FREQ=500     # checkpoint every N steps
 LOG_FREQ=50
 SEED=1000
 
@@ -239,23 +239,26 @@ rescue_checkpoints() {
 trap rescue_checkpoints EXIT
 
 # ---------------------------------------------------------------------------
-# 4. OPTIONAL: PERIODIC MID-RUN SYNC
+# 4. PERIODIC MID-RUN SYNC
 # ---------------------------------------------------------------------------
-# If you want checkpoints synced to home DURING training (not just at exit),
-# uncomment this block. It launches a background loop that rsync's every
-# SYNC_INTERVAL_SECONDS. Useful if you fear a hard node failure.
-#
-# SYNC_INTERVAL_SECONDS=3600  # sync every hour
-# (
-#   while true; do
-#     sleep "${SYNC_INTERVAL_SECONDS}"
-#     rsync -az --partial "${SCRATCH_OUTPUT_DIR}/" "${RESCUE_DIR}/${DATASET_NAME}_smolvla/"
-#     echo "$(date '+%Y-%m-%d %H:%M:%S') | periodic sync complete" >> "${LOG_FILE}"
-#   done
-# ) &
-# SYNC_PID=$!
-# # Kill the background sync loop when the main script exits
-# trap "kill ${SYNC_PID} 2>/dev/null; rescue_checkpoints" EXIT
+# Syncs checkpoints from scratch to persistent home every SYNC_INTERVAL_SECONDS.
+# This is the safety net against SIGKILL (hard node failure, booking daemon),
+# where the EXIT trap below cannot fire. Without this, a hard kill leaves all
+# checkpoints on scratch which will be wiped with the booking.
+
+SYNC_INTERVAL_SECONDS=1800  # sync every 30 minutes
+
+(
+  while true; do
+    sleep "${SYNC_INTERVAL_SECONDS}"
+    rsync -az --partial "${SCRATCH_OUTPUT_DIR}/" "${RESCUE_DIR}/${DATASET_NAME}_smolvla/"
+    echo "$(date '+%Y-%m-%d %H:%M:%S') | periodic sync to ${RESCUE_DIR}/${DATASET_NAME}_smolvla/ complete" >> "${LOG_FILE}"
+  done
+) &
+SYNC_PID=$!
+
+# Override the EXIT trap to also kill the sync loop on clean exit
+trap "kill ${SYNC_PID} 2>/dev/null; rescue_checkpoints" EXIT
 
 # ---------------------------------------------------------------------------
 # 5. BUILD THE TRAINING COMMAND
