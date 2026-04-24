@@ -17,6 +17,7 @@ Run data_cleaner.py on raw_datasets first, then run this script on the output.
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import shutil
 from collections import Counter
@@ -47,6 +48,9 @@ DEFAULT_CAMERA_TOLERANCE_NS = 150_000_000
 DEFAULT_TEXT_TOLERANCE_NS = 2_000_000_000
 DEFAULT_REPO_OWNER = "local"
 DEFAULT_VCODEC = "h264"
+DEFAULT_BLANK_MAX_STEPS = 1000
+DEFAULT_MIN_GRIPPER_COMMAND = 0.1
+DEFAULT_MIN_GRIPPER_WIDTH_SPAN = 0.002
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
 LOGGER = logging.getLogger(__name__)
@@ -57,6 +61,17 @@ class VideoReaderState:
     capture: cv2.VideoCapture
     last_frame_index: int | None = None
     last_frame_rgb: np.ndarray | None = None
+
+
+@dataclass(frozen=True)
+class EpisodeQuality:
+    step_count: int
+    duration_s: float
+    max_abs_gripper_command: float
+    gripper_width_span: float
+    has_gripper_activity: bool
+    blank_candidate: bool
+    blank_reason: str | None
 
 
 class SmolVLADatasetConverter:
@@ -72,6 +87,11 @@ class SmolVLADatasetConverter:
         vcodec: str = DEFAULT_VCODEC,
         max_episodes: int | None = None,
         max_steps_per_episode: int | None = None,
+        suppress_blank_episodes: bool = True,
+        blank_max_steps: int = DEFAULT_BLANK_MAX_STEPS,
+        min_gripper_command: float = DEFAULT_MIN_GRIPPER_COMMAND,
+        min_gripper_width_span: float = DEFAULT_MIN_GRIPPER_WIDTH_SPAN,
+        episode_report_path: Path | None = None,
     ) -> None:
         self.dataset_dir = dataset_dir
         self.output_dir = output_dir
@@ -83,6 +103,11 @@ class SmolVLADatasetConverter:
         self.vcodec = vcodec
         self.max_episodes = max_episodes
         self.max_steps_per_episode = max_steps_per_episode
+        self.suppress_blank_episodes = suppress_blank_episodes
+        self.blank_max_steps = blank_max_steps
+        self.min_gripper_command = min_gripper_command
+        self.min_gripper_width_span = min_gripper_width_span
+        self.episode_report_path = episode_report_path
 
         self._device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         LOGGER.info("Device: %s", self._device)
@@ -206,6 +231,110 @@ class SmolVLADatasetConverter:
             raise KeyError("executed_action was missing; cannot build action")
         return np.asarray(action, dtype=np.float32)
 
+    def _episode_quality(self, steps: list[dict[str, Any]]) -> EpisodeQuality:
+        if not steps:
+            return EpisodeQuality(
+                step_count=0,
+                duration_s=0.0,
+                max_abs_gripper_command=0.0,
+                gripper_width_span=0.0,
+                has_gripper_activity=False,
+                blank_candidate=True,
+                blank_reason="empty_episode",
+            )
+
+        timestamps = [int(step["timestamp_ns"]) for step in steps]
+        duration_s = (timestamps[-1] - timestamps[0]) / 1_000_000_000.0 if len(timestamps) > 1 else 0.0
+
+        gripper_commands = [float(step["action"][-1]) for step in steps]
+        max_abs_gripper_command = max(abs(value) for value in gripper_commands)
+
+        gripper_widths = [float(step["observation.state"][-1]) for step in steps]
+        gripper_width_span = max(gripper_widths) - min(gripper_widths)
+
+        has_gripper_activity = (
+            max_abs_gripper_command >= self.min_gripper_command
+            or gripper_width_span >= self.min_gripper_width_span
+        )
+
+        is_short_episode = len(steps) <= self.blank_max_steps
+        blank_candidate = (not has_gripper_activity) and is_short_episode
+        blank_reason = None
+        if blank_candidate:
+            blank_reason = (
+                "no_gripper_activity_and_short_episode"
+                f"(steps<={self.blank_max_steps})"
+            )
+
+        return EpisodeQuality(
+            step_count=len(steps),
+            duration_s=duration_s,
+            max_abs_gripper_command=max_abs_gripper_command,
+            gripper_width_span=gripper_width_span,
+            has_gripper_activity=has_gripper_activity,
+            blank_candidate=blank_candidate,
+            blank_reason=blank_reason,
+        )
+
+    def _filter_episodes(self, episodes: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        if not self.suppress_blank_episodes:
+            return episodes, []
+
+        kept: list[dict[str, Any]] = []
+        suppressed: list[dict[str, Any]] = []
+        for episode in episodes:
+            quality = episode["quality"]
+            if quality.blank_candidate:
+                suppressed.append(episode)
+            else:
+                kept.append(episode)
+        return kept, suppressed
+
+    def _write_episode_report(
+        self,
+        all_episodes: list[dict[str, Any]],
+        kept_episodes: list[dict[str, Any]],
+        suppressed_episodes: list[dict[str, Any]],
+    ) -> None:
+        if self.episode_report_path is None:
+            return
+
+        self.episode_report_path.parent.mkdir(parents=True, exist_ok=True)
+        kept_indices = {episode["episode_index"] for episode in kept_episodes}
+
+        payload = {
+            "dataset": self.dataset_dir.name,
+            "thresholds": {
+                "blank_max_steps": self.blank_max_steps,
+                "min_gripper_command": self.min_gripper_command,
+                "min_gripper_width_span": self.min_gripper_width_span,
+            },
+            "summary": {
+                "total_detected_episodes": len(all_episodes),
+                "kept_episodes": len(kept_episodes),
+                "suppressed_episodes": len(suppressed_episodes),
+            },
+            "episodes": [
+                {
+                    "episode_index": episode["episode_index"],
+                    "task": episode["task"],
+                    "step_count": episode["quality"].step_count,
+                    "duration_s": episode["quality"].duration_s,
+                    "max_abs_gripper_command": episode["quality"].max_abs_gripper_command,
+                    "gripper_width_span": episode["quality"].gripper_width_span,
+                    "has_gripper_activity": episode["quality"].has_gripper_activity,
+                    "blank_candidate": episode["quality"].blank_candidate,
+                    "blank_reason": episode["quality"].blank_reason,
+                    "suppressed": episode["episode_index"] not in kept_indices,
+                }
+                for episode in all_episodes
+            ],
+        }
+
+        with self.episode_report_path.open("w", encoding="utf-8") as handle:
+            json.dump(payload, handle, indent=2)
+        LOGGER.info("Wrote episode report to %s", self.episode_report_path)
+
     def _infer_fps(self) -> int:
         first_camera = next(iter(self.camera_frames.values()))
         if len(first_camera) < 2:
@@ -327,11 +456,13 @@ class SmolVLADatasetConverter:
 
             output_index = len(episodes)
             task = self._dominant_episode_text(synced_text_values, fallback=f"episode_{output_index:06d}")
+            quality = self._episode_quality(steps)
             episodes.append({
                 "episode_index": output_index,
                 "task": task,
                 "steps": steps,
                 "text_alignment": text_alignment,
+                "quality": quality,
             })
 
         LOGGER.info("Built %d episode(s).", len(episodes))
@@ -345,9 +476,32 @@ class SmolVLADatasetConverter:
                 )
             shutil.rmtree(self.output_dir)
 
-        episodes = self.build_episodes()
-        if not episodes:
+        all_episodes = self.build_episodes()
+        if not all_episodes:
             raise ValueError("No episodes were built from the dataset.")
+
+        episodes, suppressed_episodes = self._filter_episodes(all_episodes)
+        if not episodes:
+            raise ValueError(
+                "All episodes were classified as blank and suppressed. "
+                "Try relaxing --blank-max-steps or disabling suppression with --keep-blank-episodes."
+            )
+
+        self._write_episode_report(all_episodes, episodes, suppressed_episodes)
+
+        if suppressed_episodes:
+            suppressed_indices = [episode["episode_index"] for episode in suppressed_episodes]
+            LOGGER.info(
+                "Suppressed %d blank episode(s): %s",
+                len(suppressed_episodes),
+                suppressed_indices,
+            )
+        LOGGER.info(
+            "Episode selection summary: detected=%d, kept=%d, suppressed=%d.",
+            len(all_episodes),
+            len(episodes),
+            len(suppressed_episodes),
+        )
 
         LOGGER.info(
             "Starting conversion for '%s' with %d episode(s).",
@@ -423,6 +577,35 @@ def parse_args() -> argparse.Namespace:
                         help="Limit number of episodes to export.")
     parser.add_argument("--max-steps-per-episode", type=int, default=None,
                         help="Limit steps exported per episode.")
+    parser.add_argument(
+        "--keep-blank-episodes",
+        action="store_true",
+        help="Keep short episodes with no gripper activity instead of suppressing them.",
+    )
+    parser.add_argument(
+        "--blank-max-steps",
+        type=int,
+        default=DEFAULT_BLANK_MAX_STEPS,
+        help="Maximum episode length considered for blank suppression when no gripper activity is detected.",
+    )
+    parser.add_argument(
+        "--min-gripper-command",
+        type=float,
+        default=DEFAULT_MIN_GRIPPER_COMMAND,
+        help="Minimum absolute gripper command considered an active gripper event.",
+    )
+    parser.add_argument(
+        "--min-gripper-width-span",
+        type=float,
+        default=DEFAULT_MIN_GRIPPER_WIDTH_SPAN,
+        help="Minimum gripper width span (meters) considered an active gripper event.",
+    )
+    parser.add_argument(
+        "--episode-report",
+        type=Path,
+        default=None,
+        help="Optional JSON path for episode classification and suppression report.",
+    )
     return parser.parse_args()
 
 
@@ -444,6 +627,11 @@ def main() -> None:
         vcodec=args.vcodec,
         max_episodes=args.max_episodes,
         max_steps_per_episode=args.max_steps_per_episode,
+        suppress_blank_episodes=not args.keep_blank_episodes,
+        blank_max_steps=args.blank_max_steps,
+        min_gripper_command=args.min_gripper_command,
+        min_gripper_width_span=args.min_gripper_width_span,
+        episode_report_path=args.episode_report,
     )
     converter.export()
 
