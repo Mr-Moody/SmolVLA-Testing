@@ -99,7 +99,7 @@ def load_dataset_info(dataset_root: Path) -> dict:
 
 def train_smolvla(
     *,
-    dataset_roots: list[Path],
+    dataset_root: Path,
     lerobot_root: Path,
     policy_path: str,
     output_dir: Path,
@@ -125,23 +125,15 @@ def train_smolvla(
     from lerobot.policies.smolvla import SmolVLAConfig
     from lerobot.scripts.lerobot_train import train
 
-    total_episodes = 0
-    total_frames = 0
-    for root in dataset_roots:
-        info = load_dataset_info(root)
-        total_episodes += info["total_episodes"]
-        total_frames += info["total_frames"]
+    info = load_dataset_info(dataset_root)
+    total_episodes = info["total_episodes"]
+    total_frames = info["total_frames"]
 
-    if len(dataset_roots) == 1:
-        repo_id = f"local/{dataset_roots[0].name}"
-        root_arg = str(dataset_roots[0])
-    else:
-        repo_id = [f"local/{r.name}" for r in dataset_roots]
-        root_arg = {f"local/{r.name}": str(r) for r in dataset_roots}
+    repo_id = f"local/{dataset_root.name}"
+    root_arg = str(dataset_root)
 
     LOGGER.info("Device:    %s", device)
-    for root in dataset_roots:
-        LOGGER.info("Dataset:   %s", root)
+    LOGGER.info("Dataset:   %s", dataset_root)
     LOGGER.info("Total:     %d episode(s), %d frame(s)", total_episodes, total_frames)
     LOGGER.info("Policy:    %s", policy_path)
     LOGGER.info("Output:    %s", output_dir)
@@ -167,7 +159,7 @@ def train_smolvla(
             repo_id=policy_repo_id,
         ),
         output_dir=output_dir,
-        job_name=job_name or f"{'_'.join(r.name for r in dataset_roots)}_smolvla",
+        job_name=job_name or f"{dataset_root.name}_smolvla",
         seed=seed,
         num_workers=num_workers,
         batch_size=batch_size,
@@ -176,6 +168,11 @@ def train_smolvla(
         save_freq=save_freq,
         eval_freq=eval_freq,
     )
+
+    # config_path is not a constructor arg — lerobot expects it set as an
+    # attribute when resume=True so validate() can find train_config.json.
+    if resume:
+        cfg.config_path = output_dir / "train_config.json"
 
     LOGGER.info("Starting SmolVLA training...")
 
@@ -190,10 +187,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--dataset-root",
         type=Path,
         required=True,
-        nargs="+",
         help=(
-            "Path(s) to exported LeRobotDataset v3 root(s). Pass one or more, e.g. "
-            "--dataset-root lerobot_datasets/001 lerobot_datasets/002 lerobot_datasets/003"
+            "Path to an exported LeRobotDataset v3 root. "
+            "To train on multiple datasets, merge them first with merge_datasets.py."
         ),
     )
     parser.add_argument(
@@ -237,7 +233,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--resume",
         action="store_true",
-        help="Resume training from the last checkpoint in --output-dir.",
+        help="Resume from the last checkpoint in --output-dir (requires a train_config.json there).",
     )
     parser.add_argument("--job-name", type=str, default=None, help="Optional run name.")
     parser.add_argument(
@@ -256,13 +252,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
 def main() -> None:
     args = build_arg_parser().parse_args()
-    dataset_roots: list[Path] = args.dataset_root  # nargs="+" gives a list
-    run_name = "_".join(r.name for r in dataset_roots)
-    output_dir = args.output_dir or Path("outputs") / f"{run_name}_smolvla"
+    dataset_root: Path = args.dataset_root
+    output_dir = args.output_dir or Path("outputs") / f"{dataset_root.name}_smolvla"
     lerobot_root = resolve_lerobot_root(args.lerobot_root)
 
     train_smolvla(
-        dataset_roots=dataset_roots,
+        dataset_root=dataset_root,
         lerobot_root=lerobot_root,
         resume=args.resume,
         policy_path=args.policy_path,

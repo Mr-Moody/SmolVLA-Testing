@@ -81,8 +81,8 @@ HOME_PROJECT="${HOME}/smolvla_project"
 # lerobot sibling repo root (source code, stored in persistent home)
 LEROBOT_ROOT="${HOME_PROJECT}/lerobot"
 
-# SmolVLA-Testing repo root (your training code, stored in persistent home)
-SMOLVLA_REPO="${HOME_PROJECT}/SmolVLA-Testing"
+# SmolVLA-Testing repo root — on scratch since there is no usable home quota
+SMOLVLA_REPO="${SCRATCH_BASE}/SmolVLA-Testing"
 
 # Dataset root — stored in SCRATCH, not home, because image frames exceed the
 # 10GB home quota. Rsynced here at the start of each booking from your local
@@ -108,8 +108,10 @@ VENV_DIR="${SCRATCH_BASE}/smolvla_venv"
 # Cache dirs — must match what setup_scratch.sh configured
 CACHE_DIR="${SCRATCH_BASE}/.cache"
 
-# Log file path — written to scratch for fast I/O
-LOG_FILE="${SCRATCH_OUTPUT_DIR}/training.log"
+# Log file — sits one level above the output dir so we don't need to
+# pre-create SCRATCH_OUTPUT_DIR (lerobot creates it; pre-creating it
+# triggers a FileExistsError in lerobot's validate() when resume=False).
+LOG_FILE="${SCRATCH_BASE}/smolvla_outputs/${DATASET_JOINED}.log"
 
 # SmolVLA base model checkpoint from HuggingFace Hub.
 # Once downloaded, HF_HOME cache on scratch stores it — no re-download needed
@@ -174,8 +176,8 @@ if [[ ! -d "${VENV_DIR}" ]]; then
     exit 1
 fi
 
-# Validate all datasets exist and build the --dataset-root flags for main.py
-DATASET_ROOT_FLAGS=""
+# Validate all datasets exist
+DATASET_PATHS=()
 for ds in "${DATASET_NAMES[@]}"; do
     ds_path="${SCRATCH_DATASET_ROOT}/${ds}"
     if [[ ! -d "${ds_path}/meta" ]]; then
@@ -189,8 +191,36 @@ for ds in "${DATASET_NAMES[@]}"; do
         echo "      ${USER}@trailbreaker.cs.ucl.ac.uk:/scratch0/${USER}/lerobot_datasets/${ds}/"
         exit 1
     fi
-    DATASET_ROOT_FLAGS="${DATASET_ROOT_FLAGS} ${ds_path}"
+    DATASET_PATHS+=("${ds_path}")
 done
+
+# ---------------------------------------------------------------------------
+# 2b. MERGE DATASETS (if more than one)
+# ---------------------------------------------------------------------------
+# lerobot's LeRobotMultiDataset is not implemented in this version, so we
+# merge at the file level with merge_datasets.py before training.
+
+if [[ "${#DATASET_NAMES[@]}" -gt 1 ]]; then
+    MERGED_DATASET_ROOT="${SCRATCH_DATASET_ROOT}/merged_${DATASET_JOINED}"
+    echo "Multiple datasets detected — merging into ${MERGED_DATASET_ROOT} ..."
+
+    source "${SCRATCH_BASE}/activate_smolvla.sh"
+
+    cd "${LEROBOT_ROOT}" && uv run python "${SMOLVLA_REPO}/merge_datasets.py" \
+        "${DATASET_PATHS[@]}" \
+        --output "${MERGED_DATASET_ROOT}" \
+        --force
+
+    if [[ $? -ne 0 ]]; then
+        echo "ERROR: merge_datasets.py failed. Aborting."
+        exit 1
+    fi
+
+    TRAIN_DATASET_ROOT="${MERGED_DATASET_ROOT}"
+    echo "Merge complete. Training on: ${TRAIN_DATASET_ROOT}"
+else
+    TRAIN_DATASET_ROOT="${DATASET_PATHS[0]}"
+fi
 
 # Handle existing output directory
 if [[ -d "${SCRATCH_OUTPUT_DIR}" ]]; then
@@ -220,7 +250,7 @@ if [[ -d "${SCRATCH_OUTPUT_DIR}" ]]; then
     fi
 fi
 
-mkdir -p "${SCRATCH_OUTPUT_DIR}"
+mkdir -p "${SCRATCH_BASE}/smolvla_outputs"  # parent only — lerobot creates the output subdir
 
 # Ensure the persistent rescue directory exists in home
 mkdir -p "${RESCUE_DIR}"
@@ -323,7 +353,7 @@ RESUME_FLAG=""
 [[ "${RESUME}" == "true" ]] && RESUME_FLAG="--resume"
 
 TRAIN_CMD="cd ${LEROBOT_ROOT} && uv run python ${SMOLVLA_REPO}/main.py \
-    --dataset-root ${DATASET_ROOT_FLAGS} \
+    --dataset-root ${TRAIN_DATASET_ROOT} \
     --lerobot-root ${LEROBOT_ROOT} \
     --policy-path ${POLICY_PATH} \
     --output-dir ${SCRATCH_OUTPUT_DIR} \
