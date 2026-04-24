@@ -2,26 +2,29 @@
 Episode video labeler — Flask server with a browser-based UI.
 
 Usage:
-    python labeler.py [--datasets-root raw_datasets] [--port 5000]
+  python labeler.py [--cleaned-root cleaned_datasets] [--raw-root raw_datasets] [--port 5000]
 
 Opens http://localhost:<port> automatically. Select a dataset from the
 dropdown, browse episodes, watch both camera feeds, write a task prompt,
-and click Submit. Labels are saved to raw_datasets/<name>/annotations.jsonl
-and are automatically picked up by data_converter.py on the next run.
+and click Submit. Episode metadata and labels are read/written under
+cleaned_datasets/<name>/annotations.jsonl, while browser video conversion
+artifacts remain under raw_datasets/<name>/cameras/<camera>/.
 """
 
 from __future__ import annotations
 
 import argparse
-import os
+import re
+import shutil
+import subprocess
 import sys
 import threading
 import webbrowser
 from bisect import bisect_left
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
-from flask import Flask, Response, jsonify, request, send_file
+from flask import Flask, Response, jsonify, render_template, request, send_file
 
 # ---------------------------------------------------------------------------
 # Add project root to path so dataset_utils can be imported directly
@@ -37,592 +40,288 @@ from dataset_utils import (
 )
 
 # ---------------------------------------------------------------------------
-# HTML page (single-file SPA)
-# ---------------------------------------------------------------------------
-
-HTML_PAGE = r"""<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Episode Labeler</title>
-<style>
-  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-  body { font-family: system-ui, sans-serif; background: #0f0f0f; color: #e0e0e0; height: 100vh; display: flex; flex-direction: column; }
-
-  /* ── Header bar ── */
-  #header {
-    background: #1a1a1a;
-    border-bottom: 1px solid #333;
-    padding: 10px 16px;
-    display: flex;
-    align-items: center;
-    gap: 14px;
-    flex-shrink: 0;
-    flex-wrap: wrap;
-  }
-  #header label { font-size: 13px; color: #aaa; }
-  select, input[type=number], input[type=text], textarea {
-    background: #2a2a2a; color: #e0e0e0; border: 1px solid #444;
-    border-radius: 4px; padding: 4px 8px; font-size: 13px;
-  }
-  select:focus, input:focus, textarea:focus { outline: none; border-color: #4a9eff; }
-  button {
-    background: #2a2a2a; color: #e0e0e0; border: 1px solid #444;
-    border-radius: 4px; padding: 5px 12px; font-size: 13px; cursor: pointer;
-  }
-  button:hover { background: #3a3a3a; border-color: #555; }
-  button:disabled { opacity: 0.4; cursor: default; }
-  button.primary { background: #1a6fd4; border-color: #2a7fe4; }
-  button.primary:hover { background: #2a7fe4; }
-
-  #ep-info { margin-left: auto; font-size: 13px; color: #aaa; white-space: nowrap; }
-  #progress-badge {
-    font-size: 12px; padding: 2px 8px; border-radius: 10px;
-    background: #1a3d1a; color: #6ddc6d; border: 1px solid #2a5a2a;
-  }
-
-  /* ── Video grid ── */
-  #video-grid {
-    display: flex;
-    flex: 1;
-    min-height: 0;
-    gap: 4px;
-    padding: 4px;
-    background: #0a0a0a;
-  }
-  .cam-panel {
-    flex: 1;
-    display: flex;
-    flex-direction: column;
-    min-width: 0;
-    position: relative;
-  }
-  .cam-label {
-    font-size: 11px; color: #888; padding: 2px 6px;
-    background: #1a1a1a; border-radius: 4px 4px 0 0; text-align: center;
-  }
-  video {
-    width: 100%; height: 100%; object-fit: contain;
-    background: #000; display: block;
-    flex: 1; min-height: 0;
-  }
-  .video-fallback {
-    position: absolute;
-    inset: 24px 0 0 0;
-    display: none;
-    align-items: center;
-    justify-content: center;
-    text-align: center;
-    padding: 16px;
-    background: rgba(0, 0, 0, 0.78);
-    color: #d8d8d8;
-    font-size: 13px;
-    line-height: 1.4;
-  }
-  .video-fallback.show { display: flex; }
-  .video-fallback a {
-    color: #7eb8ff;
-    text-decoration: underline;
-  }
-  .video-fallback strong {
-    display: block;
-    margin-bottom: 6px;
-    color: #f2f2f2;
-  }
-
-  /* ── Controls bar ── */
-  #controls {
-    background: #1a1a1a;
-    border-top: 1px solid #333;
-    padding: 8px 16px;
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-    flex-shrink: 0;
-  }
-  #seek-row {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-  }
-  #seekbar {
-    flex: 1;
-    height: 4px;
-    accent-color: #4a9eff;
-    cursor: pointer;
-  }
-  #time-display { font-size: 12px; color: #aaa; min-width: 90px; text-align: right; font-variant-numeric: tabular-nums; }
-  #btn-row { display: flex; gap: 8px; align-items: center; }
-
-  /* ── Annotation area ── */
-  #annotation-area {
-    background: #141414;
-    border-top: 1px solid #333;
-    padding: 10px 16px;
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-    flex-shrink: 0;
-  }
-  #annotation-area label { font-size: 12px; color: #aaa; }
-  #task-input {
-    width: 100%; resize: vertical; min-height: 52px;
-    font-size: 14px; padding: 6px 10px; line-height: 1.4;
-  }
-  #submit-row { display: flex; align-items: center; gap: 10px; }
-  #status-msg { font-size: 12px; transition: opacity 0.4s; }
-  #status-msg.ok  { color: #6ddc6d; }
-  #status-msg.err { color: #f06060; }
-  #ep-annotation-status { font-size: 12px; color: #888; }
-
-  /* ── Loading overlay ── */
-  #loading {
-    position: fixed; inset: 0; background: rgba(0,0,0,0.75);
-    display: flex; align-items: center; justify-content: center;
-    font-size: 16px; color: #aaa; z-index: 100;
-  }
-  #loading.hidden { display: none; }
-</style>
-</head>
-<body>
-
-<div id="loading">Loading datasets…</div>
-
-<!-- ── Header ── -->
-<div id="header">
-  <label for="dataset-select">Dataset</label>
-  <select id="dataset-select"></select>
-
-  <span id="progress-badge">0 / 0 labeled</span>
-
-  <button id="btn-prev" disabled>&#9664; Prev</button>
-
-  <label for="jump-input">Jump to</label>
-  <input id="jump-input" type="number" min="0" step="1" style="width:70px" placeholder="0">
-  <button id="btn-go">Go</button>
-
-  <button id="btn-next" disabled>Next &#9654;</button>
-
-  <span id="ep-info">Episode — / —</span>
-</div>
-
-<!-- ── Video grid ── -->
-<div id="video-grid">
-  <div class="cam-panel" id="panel-cam0">
-    <div class="cam-label" id="label-cam0">camera 0</div>
-    <video id="video0" preload="auto" playsinline></video>
-    <div class="video-fallback" id="fallback-cam0"></div>
-  </div>
-  <div class="cam-panel" id="panel-cam1">
-    <div class="cam-label" id="label-cam1">camera 1</div>
-    <video id="video1" preload="auto" playsinline></video>
-    <div class="video-fallback" id="fallback-cam1"></div>
-  </div>
-</div>
-
-<!-- ── Transport controls ── -->
-<div id="controls">
-  <div id="seek-row">
-    <input id="seekbar" type="range" min="0" max="1000" value="0" step="1">
-    <span id="time-display">0:00 / 0:00</span>
-  </div>
-  <div id="btn-row">
-    <button id="btn-playpause">&#9654; Play</button>
-    <button id="btn-skip-back">&#8249;&#8249; 5s</button>
-    <button id="btn-skip-fwd">5s &#8250;&#8250;</button>
-  </div>
-</div>
-
-<!-- ── Annotation area ── -->
-<div id="annotation-area">
-  <label for="task-input">Task prompt <span id="ep-annotation-status"></span></label>
-  <textarea id="task-input" placeholder="Describe the action in this episode…"></textarea>
-  <div id="submit-row">
-    <button id="btn-submit" class="primary">Submit Label</button>
-    <span id="status-msg"></span>
-  </div>
-</div>
-
-<script>
-// ── State ──────────────────────────────────────────────────────────────────
-let datasets = [];          // [{name, episode_count, labeled_count}]
-let episodes = [];          // [{index, cameras:{name:{start_s, end_s}}, annotation}]
-let currentDataset = null;
-let currentEpIdx = 0;       // index into episodes[]
-let isPlaying = false;
-let seekSuppressed = false; // prevent seekbar feedback loop
-
-const video0 = document.getElementById('video0');
-const video1 = document.getElementById('video1');
-const videos = [video0, video1];
-
-function mediaErrorName(code) {
-  if (code === 1) return 'MEDIA_ERR_ABORTED';
-  if (code === 2) return 'MEDIA_ERR_NETWORK';
-  if (code === 3) return 'MEDIA_ERR_DECODE';
-  if (code === 4) return 'MEDIA_ERR_SRC_NOT_SUPPORTED';
-  return 'UNKNOWN_ERROR';
-}
-
-function hideFallback(i) {
-  const el = document.getElementById(`fallback-cam${i}`);
-  if (!el) return;
-  el.classList.remove('show');
-  el.innerHTML = '';
-}
-
-function showFallback(i, camName, src, reason) {
-  const el = document.getElementById(`fallback-cam${i}`);
-  if (!el) return;
-  const safeCam = camName || `camera ${i}`;
-  const safeReason = reason || 'Playback failed.';
-  el.innerHTML = `<div><strong>${safeCam} could not be played</strong>${safeReason}<br><a href="${src}" target="_blank" rel="noopener">Open video directly</a></div>`;
-  el.classList.add('show');
-}
-
-videos.forEach((v, i) => {
-  v.addEventListener('loadstart', () => hideFallback(i));
-  v.addEventListener('loadeddata', () => hideFallback(i));
-  v.addEventListener('error', () => {
-    const camLabel = document.getElementById(`label-cam${i}`)?.textContent || `camera ${i}`;
-    const errCode = v.error ? v.error.code : 0;
-    const reason = `Browser media error: ${mediaErrorName(errCode)} (${errCode}).`;
-    showFallback(i, camLabel, v.currentSrc || v.src || '#', reason);
-  });
-});
-
-// ── Helpers ────────────────────────────────────────────────────────────────
-function fmt(sec) {
-  if (!isFinite(sec)) return '0:00';
-  const m = Math.floor(sec / 60);
-  const s = Math.floor(sec % 60).toString().padStart(2, '0');
-  return `${m}:${s}`;
-}
-
-function epDuration() {
-  if (!episodes.length) return 0;
-  const ep = episodes[currentEpIdx];
-  const cams = Object.values(ep.cameras);
-  if (!cams.length) return 0;
-  return cams[0].end_s - cams[0].start_s;
-}
-
-function primaryStart() {
-  if (!episodes.length) return 0;
-  const ep = episodes[currentEpIdx];
-  const cams = Object.values(ep.cameras);
-  return cams.length ? cams[0].start_s : 0;
-}
-
-function primaryEnd() {
-  if (!episodes.length) return 0;
-  const ep = episodes[currentEpIdx];
-  const cams = Object.values(ep.cameras);
-  return cams.length ? cams[0].end_s : 0;
-}
-
-// Returns the current playback position within the episode (0 … duration)
-function relativeTime() {
-  return Math.max(0, video0.currentTime - primaryStart());
-}
-
-// ── Dataset loading ─────────────────────────────────────────────────────────
-async function loadDatasets() {
-  const res = await fetch('/api/datasets');
-  datasets = await res.json();
-  const sel = document.getElementById('dataset-select');
-  sel.innerHTML = datasets.map(d =>
-    `<option value="${d.name}">${d.name} (${d.episode_count} episodes)</option>`
-  ).join('');
-  document.getElementById('loading').classList.add('hidden');
-  if (datasets.length) selectDataset(datasets[0].name);
-}
-
-async function selectDataset(name) {
-  currentDataset = name;
-  document.getElementById('loading').classList.remove('hidden');
-  const res = await fetch(`/api/datasets/${name}/episodes`);
-  episodes = await res.json();
-  document.getElementById('loading').classList.add('hidden');
-  currentEpIdx = 0;
-  loadEpisode(0);
-  updateProgressBadge();
-}
-
-// ── Episode loading ─────────────────────────────────────────────────────────
-function loadEpisode(idx) {
-  if (!episodes.length) return;
-  idx = Math.max(0, Math.min(idx, episodes.length - 1));
-  currentEpIdx = idx;
-
-  const ep = episodes[idx];
-  const camNames = Object.keys(ep.cameras);
-
-  // Update camera labels and video sources
-  camNames.forEach((cam, i) => {
-    const labelEl = document.getElementById(`label-cam${i}`);
-    const videoEl = document.getElementById(`video${i}`);
-    const panelEl = document.getElementById(`panel-cam${i}`);
-    if (labelEl) labelEl.textContent = cam;
-    if (videoEl && panelEl) {
-      panelEl.style.display = 'flex';
-      hideFallback(i);
-      const src = `/video/${currentDataset}/${cam}`;
-      if (videoEl.dataset.src !== src) {
-        videoEl.dataset.src = src;
-        videoEl.src = src;
-        videoEl.load();
-      }
-    }
-  });
-
-  // Hide unused camera panels
-  for (let i = camNames.length; i < 2; i++) {
-    const panelEl = document.getElementById(`panel-cam${i}`);
-    if (panelEl) panelEl.style.display = 'none';
-    hideFallback(i);
-  }
-
-  // Seek to episode start once enough data is available
-  videos.forEach((v, i) => {
-    const cam = camNames[i];
-    if (!cam) return;
-    const info = ep.cameras[cam];
-    const seekTo = () => {
-      v.currentTime = info.start_s;
-    };
-    if (v.readyState >= 1) {
-      seekTo();
-    } else {
-      v.addEventListener('loadedmetadata', seekTo, { once: true });
-    }
-  });
-
-  // Update UI
-  const epInfo = document.getElementById('ep-info');
-  epInfo.textContent = `Episode ${idx + 1} / ${episodes.length}`;
-  document.getElementById('btn-prev').disabled = idx === 0;
-  document.getElementById('btn-next').disabled = idx === episodes.length - 1;
-  document.getElementById('jump-input').value = idx;
-
-  // Load existing annotation
-  const taskInput = document.getElementById('task-input');
-  const annoStatus = document.getElementById('ep-annotation-status');
-  const statusMsg = document.getElementById('status-msg');
-  statusMsg.textContent = '';
-  if (ep.annotation) {
-    taskInput.value = ep.annotation;
-    annoStatus.textContent = '(labeled)';
-    annoStatus.style.color = '#6ddc6d';
-  } else {
-    taskInput.value = '';
-    annoStatus.textContent = '(unlabeled)';
-    annoStatus.style.color = '#888';
-  }
-
-  // Reset playback state
-  pauseAll();
-  updateSeekbar();
-}
-
-// ── Playback controls ──────────────────────────────────────────────────────
-function playAll() {
-  videos.forEach(v => { if (v.src) v.play().catch(() => {}); });
-  document.getElementById('btn-playpause').textContent = '❚❚ Pause';
-  isPlaying = true;
-}
-
-function pauseAll() {
-  videos.forEach(v => v.pause());
-  document.getElementById('btn-playpause').textContent = '▶ Play';
-  isPlaying = false;
-}
-
-function togglePlay() {
-  if (isPlaying) pauseAll(); else playAll();
-}
-
-function skipSeconds(delta) {
-  if (!episodes.length) return;
-  const ep = episodes[currentEpIdx];
-  const camNames = Object.keys(ep.cameras);
-  const primaryCam = camNames[0];
-  if (!primaryCam) return;
-  const info = ep.cameras[primaryCam];
-  const newTime = Math.max(info.start_s, Math.min(video0.currentTime + delta, info.end_s));
-  const offset = newTime - video0.currentTime;
-  videos.forEach((v, i) => {
-    const cam = camNames[i];
-    if (!cam) return;
-    v.currentTime = Math.max(ep.cameras[cam].start_s, Math.min(v.currentTime + offset, ep.cameras[cam].end_s));
-  });
-}
-
-function seekToFraction(frac) {
-  if (!episodes.length) return;
-  const ep = episodes[currentEpIdx];
-  const camNames = Object.keys(ep.cameras);
-  camNames.forEach((cam, i) => {
-    const v = videos[i];
-    if (!v) return;
-    const info = ep.cameras[cam];
-    v.currentTime = info.start_s + frac * (info.end_s - info.start_s);
-  });
-}
-
-// ── Seekbar sync ──────────────────────────────────────────────────────────
-function updateSeekbar() {
-  if (seekSuppressed) return;
-  const dur = epDuration();
-  const rel = relativeTime();
-  const seekbar = document.getElementById('seekbar');
-  seekbar.value = dur > 0 ? Math.round((rel / dur) * 1000) : 0;
-  document.getElementById('time-display').textContent = `${fmt(rel)} / ${fmt(dur)}`;
-}
-
-function updateProgressBadge() {
-  const ds = datasets.find(d => d.name === currentDataset);
-  if (!ds) return;
-  const labeled = episodes.filter(e => e.annotation).length;
-  document.getElementById('progress-badge').textContent = `${labeled} / ${episodes.length} labeled`;
-}
-
-// ── Annotation submit ─────────────────────────────────────────────────────
-async function submitAnnotation() {
-  if (!currentDataset || !episodes.length) return;
-  const task = document.getElementById('task-input').value.trim();
-  if (!task) {
-    showStatus('Please enter a task prompt.', false);
-    return;
-  }
-  const ep = episodes[currentEpIdx];
-  const res = await fetch(`/api/datasets/${currentDataset}/episodes/${ep.index}/annotate`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ task }),
-  });
-  if (res.ok) {
-    ep.annotation = task;
-    const annoStatus = document.getElementById('ep-annotation-status');
-    annoStatus.textContent = '(labeled)';
-    annoStatus.style.color = '#6ddc6d';
-    updateProgressBadge();
-    showStatus('Saved!', true);
-  } else {
-    const body = await res.json().catch(() => ({}));
-    showStatus('Error: ' + (body.error || res.statusText), false);
-  }
-}
-
-function showStatus(msg, ok) {
-  const el = document.getElementById('status-msg');
-  el.textContent = msg;
-  el.className = ok ? 'ok' : 'err';
-  el.style.opacity = '1';
-  setTimeout(() => { el.style.opacity = '0'; }, 3000);
-}
-
-// ── Event wiring ──────────────────────────────────────────────────────────
-document.getElementById('dataset-select').addEventListener('change', e => {
-  selectDataset(e.target.value);
-});
-document.getElementById('btn-prev').addEventListener('click', () => loadEpisode(currentEpIdx - 1));
-document.getElementById('btn-next').addEventListener('click', () => loadEpisode(currentEpIdx + 1));
-document.getElementById('btn-go').addEventListener('click', () => {
-  const v = parseInt(document.getElementById('jump-input').value, 10);
-  if (!isNaN(v)) loadEpisode(v);
-});
-document.getElementById('jump-input').addEventListener('keydown', e => {
-  if (e.key === 'Enter') document.getElementById('btn-go').click();
-});
-document.getElementById('btn-playpause').addEventListener('click', togglePlay);
-document.getElementById('btn-skip-back').addEventListener('click', () => skipSeconds(-5));
-document.getElementById('btn-skip-fwd').addEventListener('click', () => skipSeconds(5));
-document.getElementById('btn-submit').addEventListener('click', submitAnnotation);
-
-// Keyboard shortcuts
-document.addEventListener('keydown', e => {
-  if (e.target.tagName === 'TEXTAREA' || e.target.tagName === 'INPUT') return;
-  if (e.code === 'Space') { e.preventDefault(); togglePlay(); }
-  if (e.code === 'ArrowLeft') skipSeconds(-5);
-  if (e.code === 'ArrowRight') skipSeconds(5);
-  if (e.code === 'ArrowUp') loadEpisode(currentEpIdx - 1);
-  if (e.code === 'ArrowDown') loadEpisode(currentEpIdx + 1);
-});
-
-// Seekbar interaction
-const seekbar = document.getElementById('seekbar');
-seekbar.addEventListener('mousedown', () => { seekSuppressed = true; });
-seekbar.addEventListener('input', () => {
-  seekToFraction(seekbar.value / 1000);
-  const dur = epDuration();
-  document.getElementById('time-display').textContent = `${fmt((seekbar.value / 1000) * dur)} / ${fmt(dur)}`;
-});
-seekbar.addEventListener('mouseup', () => { seekSuppressed = false; });
-seekbar.addEventListener('touchend', () => { seekSuppressed = false; });
-
-// video0 drives the seekbar and enforces episode bounds
-video0.addEventListener('timeupdate', () => {
-  const ep = episodes[currentEpIdx];
-  if (!ep) return;
-  const camNames = Object.keys(ep.cameras);
-  const primaryCam = camNames[0];
-  if (!primaryCam) return;
-  const end = ep.cameras[primaryCam].end_s;
-  if (video0.currentTime >= end - 0.05) {
-    pauseAll();
-    video0.currentTime = end;
-  }
-  updateSeekbar();
-});
-
-// ── Boot ──────────────────────────────────────────────────────────────────
-loadDatasets();
-</script>
-</body>
-</html>
-"""
-
-# ---------------------------------------------------------------------------
 # Flask application
 # ---------------------------------------------------------------------------
 
-DATASETS_ROOT = Path("raw_datasets")
+CLEANED_DATASETS_ROOT = Path("cleaned_datasets")
+RAW_DATASETS_ROOT = Path("raw_datasets")
 
 app = Flask(__name__)
 
+_TRANSCODE_LOCKS: dict[Path, threading.Lock] = {}
+_TRANSCODE_LOCKS_GUARD = threading.Lock()
+_VIDEO_STATUS: dict[tuple[str, str], dict[str, Any]] = {}
+_VIDEO_STATUS_GUARD = threading.Lock()
+_FFMPEG_TIME_RE = re.compile(r"time=(\d+):(\d+):(\d+(?:\.\d+)?)")
+
+
+def _get_transcode_lock(video_path: Path) -> threading.Lock:
+  with _TRANSCODE_LOCKS_GUARD:
+    lock = _TRANSCODE_LOCKS.get(video_path)
+    if lock is None:
+      lock = threading.Lock()
+      _TRANSCODE_LOCKS[video_path] = lock
+    return lock
+
+
+def _video_key(dataset: str, camera: str) -> tuple[str, str]:
+  return dataset, camera
+
+
+def _set_video_status(dataset: str, camera: str, **fields: Any) -> dict[str, Any]:
+  with _VIDEO_STATUS_GUARD:
+    key = _video_key(dataset, camera)
+    current = dict(_VIDEO_STATUS.get(key, {}))
+    current.update(fields)
+    _VIDEO_STATUS[key] = current
+    return dict(current)
+
+
+def _get_video_status(dataset: str, camera: str) -> dict[str, Any] | None:
+  with _VIDEO_STATUS_GUARD:
+    key = _video_key(dataset, camera)
+    status = _VIDEO_STATUS.get(key)
+    return dict(status) if status is not None else None
+
+
+def _video_paths(dataset: str, camera: str) -> tuple[Path, Path, Path]:
+  cam_dir = RAW_DATASETS_ROOT / dataset / "cameras" / camera
+  return cam_dir / "rgb.mp4", cam_dir / "rgb_h264.mp4", cam_dir / "rgb_browser.mp4"
+
+
+def _probe_duration_seconds(path: Path) -> float | None:
+  ffprobe_bin = shutil.which("ffprobe")
+  if ffprobe_bin is None:
+    return None
+  cmd = [
+    ffprobe_bin,
+    "-v",
+    "error",
+    "-show_entries",
+    "format=duration",
+    "-of",
+    "default=noprint_wrappers=1:nokey=1",
+    str(path),
+  ]
+  result = subprocess.run(cmd, capture_output=True, text=True)
+  if result.returncode != 0:
+    return None
+  try:
+    value = float(result.stdout.strip())
+  except ValueError:
+    return None
+  return value if value > 0 else None
+
+
+def _needs_transcode(source_path: Path, web_path: Path) -> bool:
+  if not source_path.exists():
+    return False
+  if not web_path.exists():
+    return True
+  if web_path.stat().st_size == 0:
+    return True
+  return web_path.stat().st_mtime < source_path.stat().st_mtime
+
+
+def _transcode_for_web(
+  source_path: Path,
+  output_path: Path,
+  progress_cb: Callable[[float, str], None] | None = None,
+) -> tuple[bool, str | None]:
+  """Transcode source video to browser-friendly H.264 MP4."""
+  ffmpeg_bin = shutil.which("ffmpeg")
+  if ffmpeg_bin is None:
+    app.logger.warning("ffmpeg not found; cannot auto-convert %s", source_path)
+    return False, "ffmpeg not found"
+
+  output_path.parent.mkdir(parents=True, exist_ok=True)
+  temp_path = output_path.with_name(output_path.stem + ".tmp.mp4")
+  duration_s = _probe_duration_seconds(source_path)
+
+  cmd = [
+    ffmpeg_bin,
+    "-hide_banner",
+    "-loglevel",
+    "error",
+    "-y",
+    "-i",
+    str(source_path),
+    "-c:v",
+    "libx264",
+    "-preset",
+    "veryfast",
+    "-crf",
+    "20",
+    "-pix_fmt",
+    "yuv420p",
+    "-movflags",
+    "+faststart",
+    "-an",
+    "-progress",
+    "pipe:1",
+    "-nostats",
+    str(temp_path),
+  ]
+
+  proc = subprocess.Popen(
+    cmd,
+    stdout=subprocess.PIPE,
+    stderr=subprocess.PIPE,
+    text=True,
+    bufsize=1,
+  )
+
+  if progress_cb is not None:
+    progress_cb(0.0, "Starting conversion...")
+
+  if proc.stdout is not None:
+    for line in proc.stdout:
+      clean = line.strip()
+      if clean.startswith("out_time_ms=") and duration_s:
+        try:
+          out_ms = int(clean.split("=", 1)[1])
+          out_s = max(0.0, out_ms / 1_000_000.0)
+          pct = min(99.0, (out_s / duration_s) * 100.0)
+          if progress_cb is not None:
+            progress_cb(pct, f"Converting... {pct:.0f}%")
+        except ValueError:
+          pass
+      elif clean.startswith("out_time=") and duration_s:
+        m = _FFMPEG_TIME_RE.search(clean)
+        if m:
+          h = int(m.group(1))
+          mnt = int(m.group(2))
+          sec = float(m.group(3))
+          out_s = h * 3600 + mnt * 60 + sec
+          pct = min(99.0, (out_s / duration_s) * 100.0)
+          if progress_cb is not None:
+            progress_cb(pct, f"Converting... {pct:.0f}%")
+
+  stderr_text = ""
+  if proc.stderr is not None:
+    stderr_text = proc.stderr.read().strip()
+  proc.wait()
+
+  if proc.returncode != 0:
+    app.logger.warning(
+      "Auto-conversion failed for %s (exit=%s): %s",
+      source_path,
+      proc.returncode,
+      stderr_text,
+    )
+    try:
+      if temp_path.exists():
+        temp_path.unlink()
+    except OSError:
+      pass
+    return False, stderr_text or "ffmpeg conversion failed"
+
+  temp_path.replace(output_path)
+  if progress_cb is not None:
+    progress_cb(100.0, "Conversion complete")
+  app.logger.info("Created browser video: %s", output_path)
+  return True, None
+
+
+def _build_video_status(dataset: str, camera: str) -> dict[str, Any]:
+  source_path, web_path, alt_web_path = _video_paths(dataset, camera)
+  status = _get_video_status(dataset, camera)
+  if status is not None and status.get("state") in {"converting", "error"}:
+    return status
+
+  if alt_web_path.exists():
+    return _set_video_status(dataset, camera, state="ready", progress=100.0, message="Browser video ready")
+  if web_path.exists() and not _needs_transcode(source_path, web_path):
+    return _set_video_status(dataset, camera, state="ready", progress=100.0, message="Browser video ready")
+  if not source_path.exists():
+    return _set_video_status(dataset, camera, state="missing", progress=0.0, message="rgb.mp4 not found")
+  if shutil.which("ffmpeg") is None:
+    return _set_video_status(dataset, camera, state="source_only", progress=0.0, message="ffmpeg not installed")
+  return _set_video_status(dataset, camera, state="pending", progress=0.0, message="Waiting to convert")
+
+
+def _run_transcode_task(dataset: str, camera: str, source_path: Path, web_path: Path) -> None:
+  lock = _get_transcode_lock(web_path)
+  with lock:
+    if not _needs_transcode(source_path, web_path):
+      _set_video_status(dataset, camera, state="ready", progress=100.0, message="Browser video ready")
+      return
+
+    def on_progress(percent: float, message: str) -> None:
+      _set_video_status(dataset, camera, state="converting", progress=round(percent, 1), message=message)
+
+    ok, error_msg = _transcode_for_web(source_path, web_path, progress_cb=on_progress)
+    if ok:
+      _set_video_status(dataset, camera, state="ready", progress=100.0, message="Browser video ready")
+    else:
+      _set_video_status(dataset, camera, state="error", progress=0.0, message=error_msg or "Conversion failed")
+
+
+def _prepare_video(dataset: str, camera: str) -> dict[str, Any]:
+  source_path, web_path, alt_web_path = _video_paths(dataset, camera)
+  status = _build_video_status(dataset, camera)
+
+  if status.get("state") in {"ready", "converting", "error", "missing", "source_only"}:
+    return status
+
+  if alt_web_path.exists():
+    return _set_video_status(dataset, camera, state="ready", progress=100.0, message="Browser video ready")
+  if not source_path.exists():
+    return _set_video_status(dataset, camera, state="missing", progress=0.0, message="rgb.mp4 not found")
+
+  _set_video_status(dataset, camera, state="converting", progress=0.0, message="Starting conversion...")
+  worker = threading.Thread(
+    target=_run_transcode_task,
+    args=(dataset, camera, source_path, web_path),
+    daemon=True,
+  )
+  worker.start()
+  return _get_video_status(dataset, camera) or {"state": "converting", "progress": 0.0, "message": "Starting conversion..."}
+
+
+def _resolve_video_path(dataset: str, camera: str) -> Path | None:
+  """Return best playable video path without blocking request thread."""
+  source_path, web_path, alt_web_path = _video_paths(dataset, camera)
+
+  if alt_web_path.exists():
+    return alt_web_path
+  if web_path.exists() and not _needs_transcode(source_path, web_path):
+    return web_path
+  if source_path.exists():
+    return source_path
+  return None
+
 
 def _discover_datasets() -> list[dict[str, Any]]:
-    """Return sorted list of {name, episode_count, labeled_count} dicts."""
-    result = []
-    if not DATASETS_ROOT.exists():
-        return result
-    for d in sorted(DATASETS_ROOT.iterdir()):
-        if not d.is_dir():
-            continue
-        ep_file = d / "episode_events.jsonl"
-        robot_file = d / "robot.jsonl"
-        if not ep_file.exists() or not robot_file.exists():
-            continue
-        try:
-            robot_rows = read_jsonl(robot_file)
-            ep_rows = read_jsonl(ep_file)
-            boundaries = find_episode_boundaries(robot_rows, ep_rows)
-            annotations = load_annotations(d)
-            result.append({
-                "name": d.name,
-                "episode_count": len(boundaries),
-                "labeled_count": len(annotations),
-            })
-        except Exception:
-            continue
+  """Return sorted list of {name, episode_count, labeled_count} dicts."""
+  result = []
+  if not CLEANED_DATASETS_ROOT.exists():
     return result
+  for d in sorted(CLEANED_DATASETS_ROOT.iterdir()):
+    if not d.is_dir():
+      continue
+    ep_file = d / "episode_events.jsonl"
+    robot_file = d / "robot.jsonl"
+    if not ep_file.exists() or not robot_file.exists():
+      continue
+    try:
+      robot_rows = read_jsonl(robot_file)
+      ep_rows = read_jsonl(ep_file)
+      boundaries = find_episode_boundaries(robot_rows, ep_rows)
+      annotations = load_annotations(d)
+      result.append({
+        "name": d.name,
+        "episode_count": len(boundaries),
+        "labeled_count": len(annotations),
+      })
+    except Exception:
+      continue
+  return result
 
 
 def _episode_list(dataset_name: str) -> list[dict[str, Any]]:
     """Build episode metadata for one dataset: boundaries → camera timestamps."""
-    dataset_dir = DATASETS_ROOT / dataset_name
+    dataset_dir = CLEANED_DATASETS_ROOT / dataset_name
     robot_rows = read_jsonl(dataset_dir / "robot.jsonl")
     ep_rows = read_jsonl(dataset_dir / "episode_events.jsonl")
     boundaries = find_episode_boundaries(robot_rows, ep_rows)
@@ -688,7 +387,7 @@ def _episode_list(dataset_name: str) -> list[dict[str, Any]]:
 
 @app.route("/")
 def index():
-    return HTML_PAGE, 200, {"Content-Type": "text/html; charset=utf-8"}
+  return render_template("labeler.html")
 
 
 @app.route("/api/datasets")
@@ -698,7 +397,7 @@ def api_datasets():
 
 @app.route("/api/datasets/<name>/episodes")
 def api_episodes(name: str):
-    dataset_dir = DATASETS_ROOT / name
+    dataset_dir = CLEANED_DATASETS_ROOT / name
     if not dataset_dir.exists():
         return jsonify({"error": "dataset not found"}), 404
     try:
@@ -709,7 +408,7 @@ def api_episodes(name: str):
 
 @app.route("/api/datasets/<name>/episodes/<int:ep_idx>/annotate", methods=["POST"])
 def api_annotate(name: str, ep_idx: int):
-    dataset_dir = DATASETS_ROOT / name
+    dataset_dir = CLEANED_DATASETS_ROOT / name
     if not dataset_dir.exists():
         return jsonify({"error": "dataset not found"}), 404
     body = request.get_json(silent=True) or {}
@@ -723,16 +422,22 @@ def api_annotate(name: str, ep_idx: int):
         return jsonify({"error": str(exc)}), 500
 
 
+@app.route("/api/video/<dataset>/<camera>/prepare", methods=["POST"])
+def api_video_prepare(dataset: str, camera: str):
+    status = _prepare_video(dataset, camera)
+    return jsonify(status)
+
+
+@app.route("/api/video/<dataset>/<camera>/status")
+def api_video_status(dataset: str, camera: str):
+    status = _build_video_status(dataset, camera)
+    return jsonify(status)
+
+
 @app.route("/video/<dataset>/<camera>")
 def serve_video(dataset: str, camera: str):
     """Serve an MP4 with proper HTTP range support for browser playback."""
-    cam_dir = DATASETS_ROOT / dataset / "cameras" / camera
-    candidates = [
-        cam_dir / "rgb_h264.mp4",      # browser-compatible transcode (preferred)
-        cam_dir / "rgb_browser.mp4",   # optional alternative name
-        cam_dir / "rgb.mp4",           # original recording
-    ]
-    video_path = next((p for p in candidates if p.exists()), None)
+    video_path = _resolve_video_path(dataset, camera)
     if video_path is None:
         return Response("not found", status=404)
 
@@ -746,20 +451,40 @@ def serve_video(dataset: str, camera: str):
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Episode video labeler.")
-    parser.add_argument("--datasets-root", type=Path, default=Path("raw_datasets"),
-                        help="Root directory containing raw_datasets (default: raw_datasets).")
+    parser.add_argument(
+        "--cleaned-root",
+        type=Path,
+        default=Path("cleaned_datasets"),
+        help="Root directory containing cleaned datasets for episode metadata and annotations (default: cleaned_datasets).",
+    )
+    parser.add_argument(
+        "--raw-root",
+        type=Path,
+        default=Path("raw_datasets"),
+        help="Root directory containing raw videos and browser-converted video files (default: raw_datasets).",
+    )
+    parser.add_argument(
+        "--datasets-root",
+        type=Path,
+        help="Deprecated alias for --cleaned-root.",
+    )
     parser.add_argument("--port", type=int, default=5000)
     parser.add_argument("--no-browser", action="store_true", help="Don't auto-open the browser.")
     return parser.parse_args()
 
 
 def main() -> None:
-    global DATASETS_ROOT
+    global CLEANED_DATASETS_ROOT, RAW_DATASETS_ROOT
     args = parse_args()
-    DATASETS_ROOT = args.datasets_root
+    CLEANED_DATASETS_ROOT = args.datasets_root if args.datasets_root else args.cleaned_root
+    RAW_DATASETS_ROOT = args.raw_root
 
-    if not DATASETS_ROOT.exists():
-        print(f"Error: datasets root not found: {DATASETS_ROOT}", file=sys.stderr)
+    if not CLEANED_DATASETS_ROOT.exists():
+        print(f"Error: cleaned datasets root not found: {CLEANED_DATASETS_ROOT}", file=sys.stderr)
+        sys.exit(1)
+
+    if not RAW_DATASETS_ROOT.exists():
+        print(f"Error: raw datasets root not found: {RAW_DATASETS_ROOT}", file=sys.stderr)
         sys.exit(1)
 
     url = f"http://localhost:{args.port}"
@@ -767,7 +492,8 @@ def main() -> None:
         threading.Timer(1.2, lambda: webbrowser.open(url)).start()
 
     print(f"Labeler running at {url}")
-    print(f"Serving datasets from: {DATASETS_ROOT.resolve()}")
+    print(f"Episodes + annotations root: {CLEANED_DATASETS_ROOT.resolve()}")
+    print(f"Video source + converted output root: {RAW_DATASETS_ROOT.resolve()}")
     print("Press Ctrl+C to quit.")
     app.run(host="0.0.0.0", port=args.port, debug=False, threaded=True)
 
