@@ -99,7 +99,7 @@ def load_dataset_info(dataset_root: Path) -> dict:
 
 def train_smolvla(
     *,
-    dataset_root: Path,
+    dataset_roots: list[Path],
     lerobot_root: Path,
     policy_path: str,
     output_dir: Path,
@@ -124,25 +124,35 @@ def train_smolvla(
     from lerobot.policies.smolvla import SmolVLAConfig
     from lerobot.scripts.lerobot_train import train
 
-    dataset_info = load_dataset_info(dataset_root)
-    repo_id = f"local/{dataset_root.name}"
+    total_episodes = 0
+    total_frames = 0
+    for root in dataset_roots:
+        info = load_dataset_info(root)
+        total_episodes += info["total_episodes"]
+        total_frames += info["total_frames"]
 
-    LOGGER.info("Device:   %s", device)
-    LOGGER.info("Dataset:  %s  (%d episode(s), %d frame(s))",
-                dataset_root,
-                dataset_info["total_episodes"],
-                dataset_info["total_frames"])
-    LOGGER.info("Policy:   %s", policy_path)
-    LOGGER.info("Output:   %s", output_dir)
-    LOGGER.info("Steps:    %d  |  batch: %d  |  workers: %d", steps, batch_size, num_workers)
-    LOGGER.info("AMP:      %s  |  seed: %d", use_amp, seed)
+    if len(dataset_roots) == 1:
+        repo_id = f"local/{dataset_roots[0].name}"
+        root_arg = str(dataset_roots[0])
+    else:
+        repo_id = [f"local/{r.name}" for r in dataset_roots]
+        root_arg = {f"local/{r.name}": str(r) for r in dataset_roots}
+
+    LOGGER.info("Device:    %s", device)
+    for root in dataset_roots:
+        LOGGER.info("Dataset:   %s", root)
+    LOGGER.info("Total:     %d episode(s), %d frame(s)", total_episodes, total_frames)
+    LOGGER.info("Policy:    %s", policy_path)
+    LOGGER.info("Output:    %s", output_dir)
+    LOGGER.info("Steps:     %d  |  batch: %d  |  workers: %d", steps, batch_size, num_workers)
+    LOGGER.info("AMP:       %s  |  seed: %d", use_amp, seed)
     if episodes:
-        LOGGER.info("Episodes: %s", episodes)
+        LOGGER.info("Episodes:  %s", episodes)
 
     cfg = TrainPipelineConfig(
         dataset=DatasetConfig(
             repo_id=repo_id,
-            root=str(dataset_root),
+            root=root_arg,
             episodes=episodes,
             use_imagenet_stats=True,
             return_uint8=False,
@@ -155,7 +165,7 @@ def train_smolvla(
             repo_id=policy_repo_id,
         ),
         output_dir=output_dir,
-        job_name=job_name or f"{dataset_root.name}_smolvla",
+        job_name=job_name or f"{'_'.join(r.name for r in dataset_roots)}_smolvla",
         seed=seed,
         num_workers=num_workers,
         batch_size=batch_size,
@@ -178,7 +188,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--dataset-root",
         type=Path,
         required=True,
-        help="Path to the exported LeRobot dataset root, e.g. lerobot_datasets/example",
+        nargs="+",
+        help=(
+            "Path(s) to exported LeRobotDataset v3 root(s). Pass one or more, e.g. "
+            "--dataset-root lerobot_datasets/001 lerobot_datasets/002 lerobot_datasets/003"
+        ),
     )
     parser.add_argument(
         "--lerobot-root",
@@ -235,11 +249,13 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
 def main() -> None:
     args = build_arg_parser().parse_args()
-    output_dir = args.output_dir or Path("outputs") / f"{args.dataset_root.name}_smolvla"
+    dataset_roots: list[Path] = args.dataset_root  # nargs="+" gives a list
+    run_name = "_".join(r.name for r in dataset_roots)
+    output_dir = args.output_dir or Path("outputs") / f"{run_name}_smolvla"
     lerobot_root = resolve_lerobot_root(args.lerobot_root)
 
     train_smolvla(
-        dataset_root=args.dataset_root,
+        dataset_roots=dataset_roots,
         lerobot_root=lerobot_root,
         policy_path=args.policy_path,
         output_dir=output_dir,

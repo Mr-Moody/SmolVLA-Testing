@@ -38,10 +38,10 @@
 #
 # USAGE
 # -----
-#   bash ~/smolvla_project/SmolVLA-Testing/run_training.sh [DATASET_NAME]
+#   bash ~/smolvla_project/SmolVLA-Testing/run_training.sh 001 002 003
 #
-#   DATASET_NAME  basename of the converted LeRobotDataset directory, e.g.
-#                 "example" for lerobot_datasets/example/  (default: "example")
+#   Pass one or more dataset basenames. All are trained jointly.
+#   Defaults to "example" if no argument is given.
 #
 # To resume from a checkpoint, set RESUME_CHECKPOINT below before running.
 # =============================================================================
@@ -55,8 +55,11 @@ set -uo pipefail
 # 0. CONFIGURATION — edit these variables to match your run
 # ---------------------------------------------------------------------------
 
-# Dataset name — basename of the converted LeRobotDataset directory.
-DATASET_NAME="${1:-example}"
+# Dataset name(s) — one or more basenames of converted LeRobotDataset directories.
+# Pass multiple to train across all datasets jointly, e.g.:
+#   bash run_training.sh 001 002 003
+# Defaults to "example" if no argument is given.
+DATASET_NAMES=("${@:-example}")
 
 # UCL scratch disk — local NVMe, no quota, wiped after booking
 SCRATCH_BASE="/scratch0/${USER}"
@@ -78,8 +81,11 @@ SMOLVLA_REPO="${HOME_PROJECT}/SmolVLA-Testing"
 #       eredhead@trailbreaker.cs.ucl.ac.uk:/scratch0/eredhead/lerobot_datasets/
 SCRATCH_DATASET_ROOT="${SCRATCH_BASE}/lerobot_datasets"
 
+# Join dataset names for use in output directory / job names
+DATASET_JOINED=$(IFS="_"; echo "${DATASET_NAMES[*]}")
+
 # All outputs (checkpoints, logs) written here DURING training (fast scratch disk)
-SCRATCH_OUTPUT_DIR="${SCRATCH_BASE}/smolvla_outputs/${DATASET_NAME}_smolvla"
+SCRATCH_OUTPUT_DIR="${SCRATCH_BASE}/smolvla_outputs/${DATASET_JOINED}_smolvla"
 
 # Where to rescue outputs when training ends or crashes (persistent NFS home)
 # These will survive a 72-hour booking expiry and can be rsync'd to your laptop.
@@ -108,7 +114,7 @@ POLICY_PATH="lerobot/smolvla_base"
 BATCH_SIZE=8
 STEPS=20000
 NUM_WORKERS=4
-SAVE_FREQ=1000    # checkpoint every N steps
+SAVE_FREQ=500     # checkpoint every N steps
 LOG_FREQ=50
 SEED=1000
 
@@ -140,7 +146,7 @@ echo "================================================================="
 echo "  SmolVLA Training Launcher — UCL TSG GPU Workstation"
 echo "================================================================="
 echo "  User        : ${USER}"
-echo "  Dataset     : ${DATASET_NAME}"
+echo "  Dataset(s)  : ${DATASET_NAMES[*]}"
 echo "  Scratch out : ${SCRATCH_OUTPUT_DIR}"
 echo "  Rescue to   : ${RESCUE_DIR}"
 echo "  Log file    : ${LOG_FILE}"
@@ -157,20 +163,23 @@ if [[ ! -d "${VENV_DIR}" ]]; then
     exit 1
 fi
 
-# Resolve the dataset path (dataset lives in persistent home — it was rsync'd)
-DATASET_ROOT="${SCRATCH_DATASET_ROOT}/${DATASET_NAME}"
-
-if [[ ! -d "${DATASET_ROOT}/meta" ]]; then
-    echo "ERROR: LeRobotDataset not found at ${DATASET_ROOT}"
-    echo ""
-    echo "The dataset lives in SCRATCH (not home) to avoid the 10GB quota."
-    echo "Rsync it from your local machine each new booking:"
-    echo ""
-    echo "  rsync -avz --progress /local/SmolVLA-Testing/lerobot_datasets/${DATASET_NAME}/ \\"
-    echo "      -e 'ssh -J eredhead@knuckles.cs.ucl.ac.uk' \\"
-    echo "      eredhead@trailbreaker.cs.ucl.ac.uk:/scratch0/eredhead/lerobot_datasets/${DATASET_NAME}/"
-    exit 1
-fi
+# Validate all datasets exist and build the --dataset-root flags for main.py
+DATASET_ROOT_FLAGS=""
+for ds in "${DATASET_NAMES[@]}"; do
+    ds_path="${SCRATCH_DATASET_ROOT}/${ds}"
+    if [[ ! -d "${ds_path}/meta" ]]; then
+        echo "ERROR: LeRobotDataset not found at ${ds_path}"
+        echo ""
+        echo "The dataset lives in SCRATCH (not home) to avoid the 10GB quota."
+        echo "Rsync it from your local machine each new booking:"
+        echo ""
+        echo "  rsync -avz --progress /local/lerobot_datasets/${ds}/ \\"
+        echo "      -e 'ssh -J ${USER}@knuckles.cs.ucl.ac.uk' \\"
+        echo "      ${USER}@trailbreaker.cs.ucl.ac.uk:/scratch0/${USER}/lerobot_datasets/${ds}/"
+        exit 1
+    fi
+    DATASET_ROOT_FLAGS="${DATASET_ROOT_FLAGS} ${ds_path}"
+done
 
 # Ensure scratch output directory exists before redirecting logs into it
 mkdir -p "${SCRATCH_OUTPUT_DIR}"
@@ -209,14 +218,14 @@ rescue_checkpoints() {
         #   --partial : keep partially-transferred files on interrupt (rsync-safe resume)
         rsync -avz --partial \
             "${SCRATCH_OUTPUT_DIR}/" \
-            "${RESCUE_DIR}/${DATASET_NAME}_smolvla/" \
+            "${RESCUE_DIR}/${DATASET_JOINED}_smolvla/" \
             2>&1 | tee -a "${LOG_FILE}"
 
         local rsync_status=$?
         if [[ ${rsync_status} -eq 0 ]]; then
             echo ""
             echo "  Rescue complete. Checkpoints are safe at:"
-            echo "    ${RESCUE_DIR}/${DATASET_NAME}_smolvla/"
+            echo "    ${RESCUE_DIR}/${DATASET_JOINED}_smolvla/"
             echo ""
             echo "  Pull them to your local machine with:"
             echo "    rsync -avP ${USER}@knuckles.cs.ucl.ac.uk:${RESCUE_DIR}/ \\"
@@ -239,23 +248,26 @@ rescue_checkpoints() {
 trap rescue_checkpoints EXIT
 
 # ---------------------------------------------------------------------------
-# 4. OPTIONAL: PERIODIC MID-RUN SYNC
+# 4. PERIODIC MID-RUN SYNC
 # ---------------------------------------------------------------------------
-# If you want checkpoints synced to home DURING training (not just at exit),
-# uncomment this block. It launches a background loop that rsync's every
-# SYNC_INTERVAL_SECONDS. Useful if you fear a hard node failure.
-#
-# SYNC_INTERVAL_SECONDS=3600  # sync every hour
-# (
-#   while true; do
-#     sleep "${SYNC_INTERVAL_SECONDS}"
-#     rsync -az --partial "${SCRATCH_OUTPUT_DIR}/" "${RESCUE_DIR}/${DATASET_NAME}_smolvla/"
-#     echo "$(date '+%Y-%m-%d %H:%M:%S') | periodic sync complete" >> "${LOG_FILE}"
-#   done
-# ) &
-# SYNC_PID=$!
-# # Kill the background sync loop when the main script exits
-# trap "kill ${SYNC_PID} 2>/dev/null; rescue_checkpoints" EXIT
+# Syncs checkpoints from scratch to persistent home every SYNC_INTERVAL_SECONDS.
+# This is the safety net against SIGKILL (hard node failure, booking daemon),
+# where the EXIT trap below cannot fire. Without this, a hard kill leaves all
+# checkpoints on scratch which will be wiped with the booking.
+
+SYNC_INTERVAL_SECONDS=1800  # sync every 30 minutes
+
+(
+  while true; do
+    sleep "${SYNC_INTERVAL_SECONDS}"
+    rsync -az --partial "${SCRATCH_OUTPUT_DIR}/" "${RESCUE_DIR}/${DATASET_JOINED}_smolvla/"
+    echo "$(date '+%Y-%m-%d %H:%M:%S') | periodic sync to ${RESCUE_DIR}/${DATASET_JOINED}_smolvla/ complete" >> "${LOG_FILE}"
+  done
+) &
+SYNC_PID=$!
+
+# Override the EXIT trap to also kill the sync loop on clean exit
+trap "kill ${SYNC_PID} 2>/dev/null; rescue_checkpoints" EXIT
 
 # ---------------------------------------------------------------------------
 # 5. BUILD THE TRAINING COMMAND
@@ -270,7 +282,7 @@ trap rescue_checkpoints EXIT
 #   4. Write checkpoints and logs to SCRATCH_OUTPUT_DIR (fast scratch NVMe)
 
 TRAIN_CMD="cd ${LEROBOT_ROOT} && uv run python ${SMOLVLA_REPO}/main.py \
-    --dataset-root ${DATASET_ROOT} \
+    --dataset-root ${DATASET_ROOT_FLAGS} \
     --lerobot-root ${LEROBOT_ROOT} \
     --policy-path ${POLICY_PATH} \
     --output-dir ${SCRATCH_OUTPUT_DIR} \
@@ -308,15 +320,10 @@ echo "Log file: ${LOG_FILE}"
 echo ""
 
 nohup bash -c "
-    # Re-export environment inside the nohup subshell — nohup does not
-    # inherit all exported vars in every shell configuration.
-    export PIP_CACHE_DIR='${CACHE_DIR}/pip'
-    export UV_CACHE_DIR='${CACHE_DIR}/uv'
-    export HF_HOME='${CACHE_DIR}/huggingface'
-    export TRANSFORMERS_CACHE='${CACHE_DIR}/huggingface/hub'
-    export HF_DATASETS_CACHE='${CACHE_DIR}/huggingface/datasets'
-    export UV_PROJECT_ENVIRONMENT='${VENV_DIR}'
-    export LEROBOT_ROOT='${LEROBOT_ROOT}'
+    # Source the activation shim — this sets PATH (including uv), all cache
+    # dirs, and UV_PROJECT_ENVIRONMENT in one shot. The nohup subshell starts
+    # with a clean environment and will not find uv otherwise.
+    source '${SCRATCH_BASE}/activate_smolvla.sh'
 
     ${TRAIN_CMD}
 " >> "${LOG_FILE}" 2>&1 &
@@ -343,7 +350,7 @@ echo "  SAFE TO DISCONNECT — close the SSH terminal or browser tab."
 echo "  Do NOT click 'Log Out' in the Guacamole desktop menu."
 echo ""
 echo "  When the run finishes, checkpoints will be rescued to:"
-echo "    ${RESCUE_DIR}/${DATASET_NAME}_smolvla/"
+echo "    ${RESCUE_DIR}/${DATASET_JOINED}_smolvla/"
 echo "================================================================="
 
 # ---------------------------------------------------------------------------
