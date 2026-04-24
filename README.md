@@ -2,7 +2,8 @@
 
 This repository contains:
 
-- `data_converter.py`: converts raw recorded sessions to native LeRobotDataset v3 format.
+- `data_cleaner.py`: filters a raw recorded session to motion-only, camera-covered steps.
+- `data_converter.py`: converts a cleaned session to native LeRobotDataset v3 format.
 - `main.py`: trains SmolVLA on a local LeRobotDataset v3 export.
 
 ## Project Layout
@@ -13,6 +14,16 @@ Expected sibling layout:
 Industrial-Project/
   lerobot/
   SmolVLA-Testing/
+```
+
+Data directories created by the pipeline:
+
+```text
+SmolVLA-Testing/
+  raw_datasets/<dataset_name>/       ← recorded session (input)
+  cleaned_datasets/<dataset_name>/   ← after data_cleaner.py
+  lerobot_datasets/<dataset_name>/   ← after data_converter.py (LeRobot v3)
+  outputs/<dataset_name>_smolvla/    ← after main.py (checkpoints + logs)
 ```
 
 Most commands below are run from `SmolVLA-Testing/`.
@@ -27,49 +38,24 @@ uv run --project ../lerobot python ...
 
 This ensures imports like `torch` and `lerobot` resolve correctly (including CUDA-enabled torch if installed there).
 
-## Command Usage
-
-### 1) Convert Raw Dataset to LeRobotDataset v3
+## Full Pipeline
 
 ```bash
-uv run --project ../lerobot python data_converter.py <dataset_name> [options]
+# 1. Clean
+uv run --project ../lerobot python data_cleaner.py <dataset_name>
+
+# 2. Convert
+uv run --project ../lerobot python data_converter.py <dataset_name> --primary-camera <camera_name>
+
+# 3. Train
+uv run --project ../lerobot python main.py --dataset-root lerobot_datasets/<dataset_name>
 ```
 
-Example:
+Example end-to-end for a dataset called `example` with an `ee_zed_m` primary camera:
 
 ```bash
-uv run --project ../lerobot python data_converter.py example --primary-camera ee_zed_m
-```
-
-Common options:
-
-- `--datasets-root`: root containing raw recordings (default: `raw_datasets`)
-- `--output-root`: output root for converted datasets (default: `lerobot_datasets`)
-- `--repo-id`: metadata repo id (default: `local/<dataset_name>`)
-- `--primary-camera`: camera mapped to `observation.images.top`
-- `--camera-tolerance-ms`: robot/camera sync tolerance in ms
-- `--text-tolerance-ms`: text/frame sync tolerance in ms
-- `--force`: overwrite existing output dataset directory
-- `--vcodec`: output video codec (default: `h264`)
-- `--max-episodes`: limit exported episodes
-- `--max-steps-per-episode`: limit steps per episode
-- `--keep-blank-episodes`: disable blank-episode suppression
-- `--blank-max-steps`: short-episode threshold for blank suppression (default: `1000`)
-- `--min-gripper-command`: absolute gripper command threshold for activity detection (default: `0.1`)
-- `--min-gripper-width-span`: gripper width span threshold in meters (default: `0.002`)
-- `--episode-report`: write JSON report with episode quality metrics and suppression flags
-
-By default, the converter suppresses blank transition episodes that are short and show no gripper activity. This helps when `episode_start` markers are used as separators and include non-grasp repositioning segments.
-
-### 2) Train SmolVLA
-
-```bash
-uv run --project ../lerobot python main.py --dataset-root <path> [options]
-```
-
-Example (CUDA):
-
-```bash
+uv run --project ../lerobot python data_cleaner.py example --force
+uv run --project ../lerobot python data_converter.py example --primary-camera ee_zed_m --force
 uv run --project ../lerobot python main.py \
   --dataset-root lerobot_datasets/example \
   --steps 20000 \
@@ -77,29 +63,102 @@ uv run --project ../lerobot python main.py \
   --device cuda
 ```
 
-Common options:
+## Command Reference
 
-- `--dataset-root` (required): local LeRobotDataset v3 export directory
-- `--lerobot-root`: optional local `lerobot` path (auto-detected if omitted)
-- `--policy-path`: base SmolVLA checkpoint or HF model id (default: `lerobot/smolvla_base`)
-- `--output-dir`: output directory for checkpoints/logs
-- `--batch-size`: training batch size (default: `8`)
-- `--steps`: training steps (default: `20000`)
-- `--device`: `cuda` or `cpu` (default: `cuda`)
-- `--num-workers`: dataloader workers (default: `4`)
-- `--log-freq`: training log frequency
-- `--save-freq`: checkpoint save frequency
-- `--eval-freq`: eval frequency (`0` disables environment eval)
-- `--seed`: training seed
-- `--use-amp`: enable automatic mixed precision
-- `--episodes`: comma-separated subset (example: `0,1,2`)
-- `--job-name`: custom run name
-- `--push-to-hub`: push trained policy to Hugging Face Hub
-- `--policy-repo-id`: required when using `--push-to-hub`
+### 1) Clean Raw Dataset
 
-## CUDA Torch Check
+Removes static (non-moving) steps and trims to camera-covered frames only.
 
-To verify CUDA torch in the `lerobot` environment:
+```bash
+uv run --project ../lerobot python data_cleaner.py <dataset_name> [options]
+```
+
+Input: `raw_datasets/<dataset_name>/`  
+Output: `cleaned_datasets/<dataset_name>/`
+
+Options:
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--datasets-root` | `raw_datasets` | Root containing raw recordings |
+| `--output-root` | `cleaned_datasets` | Root for cleaned output |
+| `--camera-tolerance-ms` | `150` | Max robot/camera sync error (ms) |
+| `--joint-motion-threshold` | `5e-4` | Max joint delta (rad) considered stationary |
+| `--gripper-motion-threshold` | `2e-4` | Max gripper delta (m) considered stationary |
+| `--action-translation-threshold` | `5e-6` | Min translation norm considered movement |
+| `--action-rotation-threshold` | `5e-5` | Min rotation norm considered movement |
+| `--max-episodes` | — | Limit number of episodes processed |
+| `--force` | — | Overwrite existing output directory |
+
+### 2) Convert Cleaned Dataset to LeRobotDataset v3
+
+```bash
+uv run --project ../lerobot python data_converter.py <dataset_name> [options]
+```
+
+Input: `cleaned_datasets/<dataset_name>/`  
+Output: `lerobot_datasets/<dataset_name>/`
+
+Options:
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--datasets-root` | `cleaned_datasets` | Root containing cleaned datasets |
+| `--output-root` | `lerobot_datasets` | Root for converted output |
+| `--repo-id` | `local/<dataset_name>` | LeRobot metadata repo id |
+| `--primary-camera` | — | Camera mapped to `observation.images.top` |
+| `--camera-tolerance-ms` | `150` | Max robot/camera sync error (ms) |
+| `--text-tolerance-ms` | `2000` | Max text/frame sync error (ms) |
+| `--vcodec` | `h264` | Output video codec |
+| `--max-episodes` | — | Limit exported episodes |
+| `--max-steps-per-episode` | — | Limit steps per episode |
+| `--force` | — | Overwrite existing output directory |
+
+### 3) Train SmolVLA
+
+```bash
+uv run --project ../lerobot python main.py --dataset-root <path> [options]
+```
+
+Options:
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--dataset-root` | *(required)* | Local LeRobotDataset v3 export directory |
+| `--lerobot-root` | *(auto-detected)* | Path to local lerobot clone |
+| `--policy-path` | `lerobot/smolvla_base` | Base SmolVLA checkpoint or HF model id |
+| `--output-dir` | `outputs/<dataset>_smolvla` | Directory for checkpoints and logs |
+| `--batch-size` | `8` | Training batch size |
+| `--steps` | `20000` | Training steps |
+| `--device` | `cuda` | Training device (`cuda` or `cpu`) |
+| `--num-workers` | `4` | DataLoader worker count |
+| `--log-freq` | `50` | Log every N steps |
+| `--save-freq` | `1000` | Save checkpoint every N steps |
+| `--eval-freq` | `0` | Eval every N steps (`0` disables) |
+| `--seed` | `1000` | Training seed |
+| `--use-amp` | — | Enable automatic mixed precision |
+| `--episodes` | — | Comma-separated episode subset, e.g. `0,1,2` |
+| `--job-name` | — | Custom run name |
+| `--push-to-hub` | — | Push trained policy to Hugging Face Hub |
+| `--policy-repo-id` | — | Required with `--push-to-hub`, e.g. `user/model` |
+
+## Utilities
+
+### Inspect an Exported Dataset
+
+```bash
+uv run --project ../lerobot python smolvla_franka_setup.py \
+  --mode inspect \
+  --dataset-root lerobot_datasets/example
+```
+
+### SmolVLA Inference Sanity Check
+
+```bash
+uv run --project ../lerobot python smolvla_franka_setup.py --mode demo
+```
+
+### Verify CUDA Torch
 
 ```bash
 uv run --project ../lerobot python -c "import torch; print(torch.__version__, torch.version.cuda, torch.cuda.is_available())"

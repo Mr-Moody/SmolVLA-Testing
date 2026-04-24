@@ -1,28 +1,17 @@
 """
-Convert a raw recorded session into a native LeRobotDataset v3 export.
+Convert a cleaned dataset into a native LeRobotDataset v3 export.
 
-Expected raw layout
-===================
-
-datasets/<dataset_name>/
-    session_metadata.json
-    robot.jsonl
-    episode_events.jsonl
-    text.jsonl                      # optional
-    language.jsonl                  # optional
-    cameras/
-        <camera_name>/
+Expected input layout (produced by data_cleaner.py):
+    cleaned_datasets/<dataset_name>/
+        session_metadata.json
+        robot.jsonl
+        episode_events.jsonl
+        text.jsonl / language.jsonl  (optional)
+        cameras/<camera_name>/
             frames.jsonl
             rgb.mp4
 
-The converter is built around the recording format already present in this
-repository. It aligns robot timesteps with the nearest camera frame, derives
-SmolVLA-friendly keys such as `observation.state` and
-`observation.images.top`, and writes a real LeRobotDataset v3 dataset using
-`LeRobotDataset.create(...)`.
-
-Run this script from the `lerobot` virtual environment so `lerobot`, `torch`,
-and the dataset extras are available.
+Run data_cleaner.py on raw_datasets first, then run this script on the output.
 """
 
 from __future__ import annotations
@@ -31,50 +20,40 @@ import argparse
 import json
 import logging
 import shutil
-from bisect import bisect_left
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 import cv2
 import numpy as np
 import torch
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
 
+from dataset_utils import (
+    CameraFrame,
+    TextRecord,
+    closest_index,
+    find_episode_boundaries,
+    infer_timestamp_ns,
+    load_camera_frames,
+    load_text_rows,
+    read_json,
+    read_jsonl,
+)
 
-DEFAULT_DATASETS_ROOT = Path("raw_datasets")
+DEFAULT_DATASETS_ROOT = Path("cleaned_datasets")
 DEFAULT_OUTPUT_ROOT = Path("lerobot_datasets")
-DEFAULT_TEXT_TOLERANCE_NS = 2_000_000_000
 DEFAULT_CAMERA_TOLERANCE_NS = 150_000_000
+DEFAULT_TEXT_TOLERANCE_NS = 2_000_000_000
 DEFAULT_REPO_OWNER = "local"
 DEFAULT_VCODEC = "h264"
 DEFAULT_BLANK_MAX_STEPS = 1000
 DEFAULT_MIN_GRIPPER_COMMAND = 0.1
 DEFAULT_MIN_GRIPPER_WIDTH_SPAN = 0.002
 
-
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
 LOGGER = logging.getLogger(__name__)
-
-
-@dataclass(frozen=True)
-class TextRecord:
-    text: str
-    timestamp_ns: int
-    raw: dict[str, Any]
-
-
-@dataclass(frozen=True)
-class CameraFrame:
-    camera_name: str
-    frame_index: int
-    timestamp_ns: int
-    video_path: Path
-    video_frame_index: int
-    width: int
-    height: int
-    raw: dict[str, Any]
 
 
 @dataclass
@@ -93,75 +72,6 @@ class EpisodeQuality:
     has_gripper_activity: bool
     blank_candidate: bool
     blank_reason: str | None
-
-
-def read_json(path: Path) -> dict[str, Any]:
-    with path.open("r", encoding="utf-8") as handle:
-        return json.load(handle)
-
-
-def read_jsonl(path: Path) -> list[dict[str, Any]]:
-    rows: list[dict[str, Any]] = []
-    with path.open("r", encoding="utf-8") as handle:
-        for line_number, line in enumerate(handle, start=1):
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                rows.append(json.loads(line))
-            except json.JSONDecodeError as exc:
-                raise ValueError(f"Invalid JSON on line {line_number} of {path}") from exc
-    return rows
-
-
-def first_existing_path(paths: Iterable[Path]) -> Path | None:
-    for path in paths:
-        if path.exists():
-            return path
-    return None
-
-
-def infer_timestamp_ns(row: dict[str, Any]) -> int:
-    for key in (
-        "host_timestamp_ns",
-        "timestamp_ns",
-        "robot_timestamp_ns",
-        "receive_host_time_ns",
-        "created_unix_time_ns",
-    ):
-        value = row.get(key)
-        if value is not None:
-            timestamp_ns = int(value)
-            if timestamp_ns > 0:
-                return timestamp_ns
-    raise KeyError(f"Could not find a timestamp field in row: {row}")
-
-
-def infer_text_value(row: dict[str, Any]) -> str:
-    for key in ("text", "instruction", "task", "transcript", "utterance", "caption"):
-        value = row.get(key)
-        if isinstance(value, str) and value.strip():
-            return value.strip()
-    raise KeyError(f"Could not find a text field in row: {row}")
-
-
-def closest_index(sorted_timestamps: list[int], target: int) -> int | None:
-    if not sorted_timestamps:
-        return None
-
-    insert_at = bisect_left(sorted_timestamps, target)
-    candidates: list[tuple[int, int]] = []
-    if insert_at < len(sorted_timestamps):
-        candidates.append((abs(sorted_timestamps[insert_at] - target), insert_at))
-    if insert_at > 0:
-        prev_idx = insert_at - 1
-        candidates.append((abs(sorted_timestamps[prev_idx] - target), prev_idx))
-
-    if not candidates:
-        return None
-
-    candidates.sort(key=lambda item: (item[0], item[1]))
-    return candidates[0][1]
 
 
 class SmolVLADatasetConverter:
@@ -199,83 +109,33 @@ class SmolVLADatasetConverter:
         self.min_gripper_width_span = min_gripper_width_span
         self.episode_report_path = episode_report_path
 
-        self.session_metadata = read_json(self.dataset_dir / "session_metadata.json")
-        raw_robot_rows = read_jsonl(self.dataset_dir / "robot.jsonl")
-        self.robot_rows = []
-        skipped_robot_rows = 0
-        for row in raw_robot_rows:
-            try:
-                infer_timestamp_ns(row)
-            except KeyError:
-                skipped_robot_rows += 1
-                continue
-            self.robot_rows.append(row)
-        if skipped_robot_rows:
-            LOGGER.warning(
-                "Skipped %d robot row(s) with missing or non-positive timestamps.",
-                skipped_robot_rows,
-            )
-        self.episode_rows = read_jsonl(self.dataset_dir / "episode_events.jsonl")
-        self.text_rows = self._load_text_rows()
-        self.camera_frames = self._load_camera_frames()
+        self._device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        LOGGER.info("Device: %s", self._device)
+        LOGGER.info("Loading dataset: %s", dataset_dir)
 
-    def _load_text_rows(self) -> list[TextRecord]:
-        text_path = first_existing_path(
-            (
-                self.dataset_dir / "text.jsonl",
-                self.dataset_dir / "language.jsonl",
-                self.dataset_dir / "text" / "text.jsonl",
-            )
+        self.session_metadata = read_json(dataset_dir / "session_metadata.json")
+        self.robot_rows = read_jsonl(dataset_dir / "robot.jsonl")
+        self.episode_rows = read_jsonl(dataset_dir / "episode_events.jsonl")
+        self.text_rows = load_text_rows(dataset_dir)
+        self.camera_frames = load_camera_frames(dataset_dir)
+        self._camera_timestamps: dict[str, list[int]] = {
+            name: [frame.timestamp_ns for frame in frames]
+            for name, frames in self.camera_frames.items()
+        }
+        self._feature_name_cache: dict[str, str] = {
+            name: self._camera_feature_name(name) for name in self.camera_frames
+        }
+
+        LOGGER.info(
+            "Loaded %d robot row(s), %d camera(s): %s",
+            len(self.robot_rows),
+            len(self.camera_frames),
+            ", ".join(self.camera_frames),
         )
-        if text_path is None:
-            return []
-
-        text_records = [
-            TextRecord(
-                text=infer_text_value(row),
-                timestamp_ns=infer_timestamp_ns(row),
-                raw=row,
-            )
-            for row in read_jsonl(text_path)
-        ]
-        text_records.sort(key=lambda item: item.timestamp_ns)
-        return text_records
-
-    def _load_camera_frames(self) -> dict[str, list[CameraFrame]]:
-        cameras_root = self.dataset_dir / "cameras"
-        if not cameras_root.exists():
-            raise FileNotFoundError(f"Missing cameras directory: {cameras_root}")
-
-        camera_frames: dict[str, list[CameraFrame]] = {}
-        for camera_dir in sorted(path for path in cameras_root.iterdir() if path.is_dir()):
-            frames_path = camera_dir / "frames.jsonl"
-            if not frames_path.exists():
-                continue
-
-            frames = []
-            for row in read_jsonl(frames_path):
-                video_name = row.get("rgb_video", "rgb.mp4")
-                frames.append(
-                    CameraFrame(
-                        camera_name=row.get("camera", camera_dir.name),
-                        frame_index=int(row["frame_index"]),
-                        timestamp_ns=infer_timestamp_ns(row),
-                        video_path=camera_dir / video_name,
-                        video_frame_index=int(row.get("rgb_video_frame", row["frame_index"])),
-                        width=int(row["width"]),
-                        height=int(row["height"]),
-                        raw=row,
-                    )
-                )
-
-            frames.sort(key=lambda item: item.timestamp_ns)
-            if frames:
-                camera_frames[camera_dir.name] = frames
-
-        if not camera_frames:
-            raise ValueError(f"No camera frames were found under {cameras_root}")
-
-        return camera_frames
+        self._camera_ts_tensors: dict[str, torch.Tensor] = {
+            name: torch.tensor(ts, dtype=torch.int64, device=self._device)
+            for name, ts in self._camera_timestamps.items()
+        }
 
     @staticmethod
     def sync_text_to_frames(
@@ -285,58 +145,76 @@ class SmolVLADatasetConverter:
     ) -> list[dict[str, Any]]:
         if not frames:
             return []
-
-        text_timestamps = [record.timestamp_ns for record in text_records]
+        text_timestamps = [r.timestamp_ns for r in text_records]
         aligned: list[dict[str, Any]] = []
-
         for frame in frames:
             match_index = closest_index(text_timestamps, frame.timestamp_ns)
             text: str | None = None
             delta_ns: int | None = None
-
             if match_index is not None:
                 record = text_records[match_index]
-                candidate_delta_ns = abs(record.timestamp_ns - frame.timestamp_ns)
-                if candidate_delta_ns <= max_delta_ns:
+                candidate_delta = abs(record.timestamp_ns - frame.timestamp_ns)
+                if candidate_delta <= max_delta_ns:
                     text = record.text
-                    delta_ns = candidate_delta_ns
-
-            aligned.append(
-                {
-                    "camera_name": frame.camera_name,
-                    "frame_index": frame.frame_index,
-                    "frame_timestamp_ns": frame.timestamp_ns,
-                    "text": text,
-                    "text_time_delta_ns": delta_ns,
-                }
-            )
-
+                    delta_ns = candidate_delta
+            aligned.append({
+                "camera_name": frame.camera_name,
+                "frame_index": frame.frame_index,
+                "frame_timestamp_ns": frame.timestamp_ns,
+                "text": text,
+                "text_time_delta_ns": delta_ns,
+            })
         return aligned
 
-    def _episode_boundaries(self) -> list[tuple[int, int]]:
-        start_times = sorted(
-            int(row["robot_timestamp_ns"])
-            for row in self.episode_rows
-            if row.get("event") == "episode_start" and row.get("robot_timestamp_ns") is not None
+    def _camera_feature_name(self, camera_name: str) -> str:
+        if self.primary_camera is not None:
+            return "observation.images.top" if camera_name == self.primary_camera else f"observation.images.{camera_name}"
+        default_camera = sorted(self.camera_frames)[0]
+        return "observation.images.top" if camera_name == default_camera else f"observation.images.{camera_name}"
+
+    def _match_camera_frames_batch(
+        self, timestamps_ns: list[int], camera_name: str
+    ) -> list[CameraFrame | None]:
+        """Return the nearest CameraFrame (or None if outside tolerance) for each timestamp."""
+        frames = self.camera_frames[camera_name]
+        M = len(frames)
+        if M == 0:
+            return [None] * len(timestamps_ns)
+
+        cam_ts = self._camera_ts_tensors[camera_name]
+        robot_ts = torch.tensor(timestamps_ns, dtype=torch.int64, device=self._device)
+
+        idx = torch.searchsorted(cam_ts, robot_ts)
+        left_idx = (idx - 1).clamp(min=0)
+        right_idx = idx.clamp(max=M - 1)
+
+        left_delta = torch.where(
+            idx > 0,
+            (cam_ts[left_idx] - robot_ts).abs(),
+            torch.full_like(robot_ts, 10 ** 18),
         )
-        if not start_times:
-            return [(0, len(self.robot_rows))]
+        right_delta = torch.where(
+            idx < M,
+            (cam_ts[right_idx] - robot_ts).abs(),
+            torch.full_like(robot_ts, 10 ** 18),
+        )
 
-        robot_times = [infer_timestamp_ns(row) for row in self.robot_rows]
-        boundaries: list[tuple[int, int]] = []
+        use_right = right_delta < left_delta
+        best_idx = torch.where(use_right, right_idx, left_idx)
+        best_delta = torch.minimum(left_delta, right_delta)
 
-        for index, start_time in enumerate(start_times):
-            next_start = start_times[index + 1] if index + 1 < len(start_times) else None
-            start_idx = bisect_left(robot_times, start_time)
-            end_idx = bisect_left(robot_times, next_start) if next_start is not None else len(robot_times)
-            if end_idx > start_idx:
-                boundaries.append((start_idx, end_idx))
+        best_idx_list = best_idx.cpu().tolist()
+        valid_list = (best_delta <= self.camera_tolerance_ns).cpu().tolist()
+        return [frames[i] if v else None for i, v in zip(best_idx_list, valid_list)]
 
-        return boundaries or [(0, len(self.robot_rows))]
+    def _dominant_episode_text(self, synced_texts: list[str], fallback: str) -> str:
+        if not synced_texts:
+            return fallback
+        return Counter(synced_texts).most_common(1)[0][0]
 
     def _state_vector(self, row: dict[str, Any]) -> np.ndarray:
         robot_state = row["robot_state"]
-        joint_positions = [float(value) for value in robot_state.get("q", [])]
+        joint_positions = [float(v) for v in robot_state.get("q", [])]
         gripper_width = float(robot_state.get("gripper_width", 0.0))
         state = joint_positions + [gripper_width]
         if not state:
@@ -345,35 +223,13 @@ class SmolVLADatasetConverter:
 
     def _action_vector(self, row: dict[str, Any]) -> np.ndarray:
         executed_action = row["executed_action"]
-        translation = [float(value) for value in executed_action.get("cartesian_delta_translation", [])]
-        rotation = [float(value) for value in executed_action.get("cartesian_delta_rotation", [])]
+        translation = [float(v) for v in executed_action.get("cartesian_delta_translation", [])]
+        rotation = [float(v) for v in executed_action.get("cartesian_delta_rotation", [])]
         gripper = [float(executed_action.get("gripper_command", 0.0))]
         action = translation + rotation + gripper
         if not action:
             raise KeyError("executed_action was missing; cannot build action")
         return np.asarray(action, dtype=np.float32)
-
-    def _camera_feature_name(self, camera_name: str) -> str:
-        if self.primary_camera is not None:
-            return "observation.images.top" if camera_name == self.primary_camera else f"observation.images.{camera_name}"
-
-        default_camera = sorted(self.camera_frames)[0]
-        return "observation.images.top" if camera_name == default_camera else f"observation.images.{camera_name}"
-
-    def _match_camera_frame(self, timestamp_ns: int, frames: list[CameraFrame]) -> CameraFrame | None:
-        frame_timestamps = [frame.timestamp_ns for frame in frames]
-        match_index = closest_index(frame_timestamps, timestamp_ns)
-        if match_index is None:
-            return None
-        matched = frames[match_index]
-        if abs(matched.timestamp_ns - timestamp_ns) > self.camera_tolerance_ns:
-            return None
-        return matched
-
-    def _dominant_episode_text(self, synced_texts: list[str], fallback: str) -> str:
-        if not synced_texts:
-            return fallback
-        return Counter(synced_texts).most_common(1)[0][0]
 
     def _episode_quality(self, steps: list[dict[str, Any]]) -> EpisodeQuality:
         if not steps:
@@ -419,68 +275,6 @@ class SmolVLADatasetConverter:
             blank_candidate=blank_candidate,
             blank_reason=blank_reason,
         )
-
-    def build_episodes(self) -> list[dict[str, Any]]:
-        episodes: list[dict[str, Any]] = []
-
-        episode_boundaries = self._episode_boundaries()
-        if self.max_episodes is not None:
-            episode_boundaries = episode_boundaries[: self.max_episodes]
-
-        for episode_index, (start_idx, end_idx) in enumerate(episode_boundaries):
-            robot_slice = self.robot_rows[start_idx:end_idx]
-            if not robot_slice:
-                continue
-            if self.max_steps_per_episode is not None:
-                robot_slice = robot_slice[: self.max_steps_per_episode]
-
-            steps: list[dict[str, Any]] = []
-            matched_frames_by_camera: dict[str, list[CameraFrame]] = {name: [] for name in self.camera_frames}
-
-            for step_index, robot_row in enumerate(robot_slice):
-                timestamp_ns = infer_timestamp_ns(robot_row)
-                camera_matches: dict[str, CameraFrame] = {}
-
-                for camera_name, frames in self.camera_frames.items():
-                    matched_frame = self._match_camera_frame(timestamp_ns, frames)
-                    if matched_frame is None:
-                        raise ValueError(
-                            f"No camera frame within {self.camera_tolerance_ns / 1e6:.1f} ms "
-                            f"for episode {episode_index}, step {step_index}, camera '{camera_name}'."
-                        )
-                    camera_matches[camera_name] = matched_frame
-                    matched_frames_by_camera[camera_name].append(matched_frame)
-
-                steps.append(
-                    {
-                        "step_index": step_index,
-                        "timestamp_ns": timestamp_ns,
-                        "observation.state": self._state_vector(robot_row),
-                        "action": self._action_vector(robot_row),
-                        "camera_matches": camera_matches,
-                    }
-                )
-
-            synced_text_values: list[str] = []
-            text_alignment: dict[str, list[dict[str, Any]]] = {}
-            for camera_name, matched_frames in matched_frames_by_camera.items():
-                alignment = self.sync_text_to_frames(matched_frames, self.text_rows, self.text_tolerance_ns)
-                text_alignment[camera_name] = alignment
-                synced_text_values.extend(item["text"] for item in alignment if item["text"])
-
-            task = self._dominant_episode_text(synced_text_values, fallback=f"episode_{episode_index:06d}")
-            quality = self._episode_quality(steps)
-            episodes.append(
-                {
-                    "episode_index": episode_index,
-                    "task": task,
-                    "steps": steps,
-                    "text_alignment": text_alignment,
-                    "quality": quality,
-                }
-            )
-
-        return episodes
 
     def _filter_episodes(self, episodes: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
         if not self.suppress_blank_episodes:
@@ -545,36 +339,31 @@ class SmolVLADatasetConverter:
         first_camera = next(iter(self.camera_frames.values()))
         if len(first_camera) < 2:
             return 30
-
         deltas = [
-            first_camera[index + 1].timestamp_ns - first_camera[index].timestamp_ns
-            for index in range(len(first_camera) - 1)
-            if first_camera[index + 1].timestamp_ns > first_camera[index].timestamp_ns
+            first_camera[i + 1].timestamp_ns - first_camera[i].timestamp_ns
+            for i in range(len(first_camera) - 1)
+            if first_camera[i + 1].timestamp_ns > first_camera[i].timestamp_ns
         ]
         if not deltas:
             return 30
-
-        median_delta_ns = float(np.median(np.asarray(deltas, dtype=np.float64)))
-        return max(1, int(round(1_000_000_000.0 / median_delta_ns)))
+        return max(1, int(round(1_000_000_000.0 / float(np.median(np.asarray(deltas, dtype=np.float64))))))
 
     def _dataset_features(self, episodes: list[dict[str, Any]]) -> dict[str, Any]:
         first_step = episodes[0]["steps"][0]
         state_dim = int(first_step["observation.state"].shape[0])
         action_dim = int(first_step["action"].shape[0])
-
         features: dict[str, Any] = {
             "observation.state": {
                 "dtype": "float32",
                 "shape": (state_dim,),
-                "names": {"motors": [f"state_{index}" for index in range(state_dim)]},
+                "names": {"motors": [f"state_{i}" for i in range(state_dim)]},
             },
             "action": {
                 "dtype": "float32",
                 "shape": (action_dim,),
-                "names": {"motors": [f"action_{index}" for index in range(action_dim)]},
+                "names": {"motors": [f"action_{i}" for i in range(action_dim)]},
             },
         }
-
         for camera_name, frames in self.camera_frames.items():
             sample = frames[0]
             features[self._camera_feature_name(camera_name)] = {
@@ -582,7 +371,6 @@ class SmolVLADatasetConverter:
                 "shape": (3, sample.height, sample.width),
                 "names": ["channels", "height", "width"],
             }
-
         return features
 
     def _load_video_frame(self, frame: CameraFrame, readers: dict[Path, VideoReaderState]) -> np.ndarray:
@@ -595,40 +383,102 @@ class SmolVLADatasetConverter:
             readers[frame.video_path] = reader
 
         requested_index = frame.video_frame_index
-
         if reader.last_frame_index == requested_index and reader.last_frame_rgb is not None:
             return reader.last_frame_rgb.copy()
 
-        if reader.last_frame_index is None:
-            reader.capture.set(cv2.CAP_PROP_POS_FRAMES, requested_index)
-        elif requested_index < reader.last_frame_index:
-            reader.capture.set(cv2.CAP_PROP_POS_FRAMES, requested_index)
-        elif requested_index > reader.last_frame_index + 1:
+        if (
+            reader.last_frame_index is None
+            or requested_index < reader.last_frame_index
+            or requested_index > reader.last_frame_index + 1
+        ):
             reader.capture.set(cv2.CAP_PROP_POS_FRAMES, requested_index)
 
         ok, image_bgr = reader.capture.read()
         if not ok or image_bgr is None:
-            raise RuntimeError(
-                f"Could not read frame {requested_index} from {frame.video_path}"
-            )
+            raise RuntimeError(f"Could not read frame {requested_index} from {frame.video_path}")
 
         image_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
         reader.last_frame_index = requested_index
         reader.last_frame_rgb = image_rgb
         return image_rgb.copy()
 
+    def build_episodes(self) -> list[dict[str, Any]]:
+        episodes: list[dict[str, Any]] = []
+        boundaries = find_episode_boundaries(self.robot_rows, self.episode_rows)
+        LOGGER.info("Found %d episode(s).", len(boundaries))
+        if self.max_episodes is not None:
+            boundaries = boundaries[: self.max_episodes]
+
+        for episode_index, (start_idx, end_idx) in enumerate(boundaries):
+            robot_slice = self.robot_rows[start_idx:end_idx]
+            if not robot_slice:
+                continue
+            if self.max_steps_per_episode is not None:
+                robot_slice = robot_slice[: self.max_steps_per_episode]
+
+            step_timestamps = [infer_timestamp_ns(row) for row in robot_slice]
+
+            # Batch-match all camera frames for this episode in one GPU pass per camera.
+            camera_frame_matches: dict[str, list[CameraFrame | None]] = {
+                cam: self._match_camera_frames_batch(step_timestamps, cam)
+                for cam in self.camera_frames
+            }
+
+            steps: list[dict[str, Any]] = []
+            matched_frames_by_camera: dict[str, list[CameraFrame]] = {name: [] for name in self.camera_frames}
+
+            for step_index, robot_row in enumerate(robot_slice):
+                camera_matches: dict[str, CameraFrame] = {}
+                for camera_name in self.camera_frames:
+                    matched_frame = camera_frame_matches[camera_name][step_index]
+                    if matched_frame is None:
+                        raise ValueError(
+                            f"No camera frame within {self.camera_tolerance_ns / 1e6:.1f} ms "
+                            f"for episode {episode_index}, step {step_index}, camera '{camera_name}'."
+                        )
+                    camera_matches[camera_name] = matched_frame
+                    matched_frames_by_camera[camera_name].append(matched_frame)
+
+                steps.append({
+                    "step_index": step_index,
+                    "timestamp_ns": step_timestamps[step_index],
+                    "observation.state": self._state_vector(robot_row),
+                    "action": self._action_vector(robot_row),
+                    "camera_matches": camera_matches,
+                })
+
+            synced_text_values: list[str] = []
+            text_alignment: dict[str, list[dict[str, Any]]] = {}
+            for camera_name, matched_frames in matched_frames_by_camera.items():
+                alignment = self.sync_text_to_frames(matched_frames, self.text_rows, self.text_tolerance_ns)
+                text_alignment[camera_name] = alignment
+                synced_text_values.extend(item["text"] for item in alignment if item["text"])
+
+            output_index = len(episodes)
+            task = self._dominant_episode_text(synced_text_values, fallback=f"episode_{output_index:06d}")
+            quality = self._episode_quality(steps)
+            episodes.append({
+                "episode_index": output_index,
+                "task": task,
+                "steps": steps,
+                "text_alignment": text_alignment,
+                "quality": quality,
+            })
+
+        LOGGER.info("Built %d episode(s).", len(episodes))
+        return episodes
+
     def export(self) -> Path:
         if self.output_dir.exists():
             if not self.force_overwrite:
                 raise FileExistsError(
-                    f"Output directory already exists: {self.output_dir}. "
-                    "Pass --force to overwrite it."
+                    f"Output directory already exists: {self.output_dir}. Pass --force to overwrite it."
                 )
             shutil.rmtree(self.output_dir)
 
         all_episodes = self.build_episodes()
         if not all_episodes:
-            raise ValueError("No episodes were built from the dataset")
+            raise ValueError("No episodes were built from the dataset.")
 
         episodes, suppressed_episodes = self._filter_episodes(all_episodes)
         if not episodes:
@@ -654,7 +504,7 @@ class SmolVLADatasetConverter:
         )
 
         LOGGER.info(
-            "Starting dataset conversion for '%s' with %d episode(s).",
+            "Starting conversion for '%s' with %d episode(s).",
             self.dataset_dir.name,
             len(episodes),
         )
@@ -671,14 +521,11 @@ class SmolVLADatasetConverter:
 
         readers: dict[Path, VideoReaderState] = {}
         try:
-            total_episodes = len(episodes)
+            total = len(episodes)
             for episode_number, episode in enumerate(episodes, start=1):
                 LOGGER.info(
                     "Processing episode %d/%d (task=%s, steps=%d).",
-                    episode_number,
-                    total_episodes,
-                    episode["task"],
-                    len(episode["steps"]),
+                    episode_number, total, episode["task"], len(episode["steps"]),
                 )
                 for step in episode["steps"]:
                     frame_dict: dict[str, Any] = {
@@ -686,94 +533,50 @@ class SmolVLADatasetConverter:
                         "observation.state": torch.from_numpy(step["observation.state"].copy()),
                         "action": torch.from_numpy(step["action"].copy()),
                     }
-
                     for camera_name, matched_frame in step["camera_matches"].items():
-                        frame_dict[self._camera_feature_name(camera_name)] = self._load_video_frame(
-                            matched_frame,
-                            readers,
+                        frame_dict[self._feature_name_cache[camera_name]] = self._load_video_frame(
+                            matched_frame, readers
                         )
-
                     dataset.add_frame(frame_dict)
-
-                dataset.save_episode(parallel_encoding=False)
-
+                dataset.save_episode(parallel_encoding=True)
             dataset.finalize()
         finally:
             for reader in readers.values():
                 reader.capture.release()
 
-        LOGGER.info(
-            "Finished dataset conversion for '%s'. Output written to %s.",
-            self.dataset_dir.name,
-            self.output_dir,
-        )
+        LOGGER.info("Conversion complete. Output written to %s", self.output_dir)
         return self.output_dir
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Convert a raw recording directory into a native LeRobotDataset v3 export."
+        description="Convert a cleaned dataset directory into a LeRobotDataset v3 export."
     )
-    parser.add_argument("dataset_name", help="Dataset directory name under --datasets-root.")
+    parser.add_argument("dataset_name", help="Dataset name under --datasets-root.")
     parser.add_argument(
-        "--datasets-root",
-        type=Path,
-        default=DEFAULT_DATASETS_ROOT,
-        help="Directory containing raw datasets.",
+        "--datasets-root", type=Path, default=DEFAULT_DATASETS_ROOT,
+        help="Root containing cleaned datasets (default: cleaned_datasets).",
     )
+    parser.add_argument("--output-root", type=Path, default=DEFAULT_OUTPUT_ROOT)
     parser.add_argument(
-        "--output-root",
-        type=Path,
-        default=DEFAULT_OUTPUT_ROOT,
-        help="Directory where LeRobotDataset v3 exports will be created.",
+        "--repo-id", type=str, default=None,
+        help="LeRobot repo_id. Defaults to local/<dataset_name>.",
     )
-    parser.add_argument(
-        "--repo-id",
-        type=str,
-        default=None,
-        help="LeRobot repo_id to store in dataset metadata. Defaults to local/<dataset_name>.",
-    )
-    parser.add_argument(
-        "--primary-camera",
-        type=str,
-        default=None,
-        help="Camera name to map to observation.images.top.",
-    )
-    parser.add_argument(
-        "--camera-tolerance-ms",
-        type=float,
-        default=DEFAULT_CAMERA_TOLERANCE_NS / 1_000_000.0,
-        help="Maximum robot-to-camera sync error in milliseconds.",
-    )
-    parser.add_argument(
-        "--text-tolerance-ms",
-        type=float,
-        default=DEFAULT_TEXT_TOLERANCE_NS / 1_000_000.0,
-        help="Maximum text-to-frame sync error in milliseconds.",
-    )
-    parser.add_argument(
-        "--force",
-        action="store_true",
-        help="Overwrite the existing output directory if it already exists.",
-    )
-    parser.add_argument(
-        "--vcodec",
-        type=str,
-        default=DEFAULT_VCODEC,
-        help="Video codec used by LeRobotDataset.create(). Defaults to h264 for faster local exports.",
-    )
-    parser.add_argument(
-        "--max-episodes",
-        type=int,
-        default=None,
-        help="Optional limit for the number of episodes to export.",
-    )
-    parser.add_argument(
-        "--max-steps-per-episode",
-        type=int,
-        default=None,
-        help="Optional limit for the number of steps exported from each episode.",
-    )
+    parser.add_argument("--primary-camera", type=str, default=None,
+                        help="Camera name to map to observation.images.top.")
+    parser.add_argument("--camera-tolerance-ms", type=float,
+                        default=DEFAULT_CAMERA_TOLERANCE_NS / 1_000_000.0,
+                        help="Maximum robot-to-camera sync error in milliseconds.")
+    parser.add_argument("--text-tolerance-ms", type=float,
+                        default=DEFAULT_TEXT_TOLERANCE_NS / 1_000_000.0,
+                        help="Maximum text-to-frame sync error in milliseconds.")
+    parser.add_argument("--force", action="store_true", help="Overwrite existing output directory.")
+    parser.add_argument("--vcodec", type=str, default=DEFAULT_VCODEC,
+                        help="Video codec for LeRobotDataset.create().")
+    parser.add_argument("--max-episodes", type=int, default=None,
+                        help="Limit number of episodes to export.")
+    parser.add_argument("--max-steps-per-episode", type=int, default=None,
+                        help="Limit steps exported per episode.")
     parser.add_argument(
         "--keep-blank-episodes",
         action="store_true",
@@ -808,14 +611,11 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-
     dataset_dir = args.datasets_root / args.dataset_name
     if not dataset_dir.exists():
-        raise FileNotFoundError(f"Dataset '{args.dataset_name}' was not found at {dataset_dir}")
-
+        raise FileNotFoundError(f"Dataset '{args.dataset_name}' not found at {dataset_dir}")
     output_dir = args.output_root / args.dataset_name
     repo_id = args.repo_id or f"{DEFAULT_REPO_OWNER}/{args.dataset_name}"
-
     converter = SmolVLADatasetConverter(
         dataset_dir=dataset_dir,
         output_dir=output_dir,
@@ -833,10 +633,7 @@ def main() -> None:
         min_gripper_width_span=args.min_gripper_width_span,
         episode_report_path=args.episode_report,
     )
-    LOGGER.info("Starting converter.")
-    export_dir = converter.export()
-    LOGGER.info("Converter finished.")
-    print(f"LeRobotDataset v3 written to: {export_dir}")
+    converter.export()
 
 
 if __name__ == "__main__":
