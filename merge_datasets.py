@@ -35,6 +35,9 @@ import pyarrow.parquet as pq
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
 LOGGER = logging.getLogger(__name__)
 
+# Experimental simplification: collapse all tasks into one language instruction.
+SINGLE_TASK_TEXT = "Picking up a soup can and placing it on a cardboard surface"
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -102,6 +105,46 @@ def count_video_files(source_root: Path, video_key: str) -> int:
     return count
 
 
+def collect_video_files_by_index(source_root: Path, video_key: str) -> dict[int, Path]:
+    """Collect {file_index: file_path} for one video key within a source dataset.
+
+    We key by file index because episodes parquet references videos via
+    `videos/<key>/file_index`.
+    """
+    vid_root = source_root / "videos" / video_key
+    if not vid_root.exists():
+        return {}
+
+    files_by_index: dict[int, Path] = {}
+    for chunk_dir in sorted(vid_root.iterdir()):
+        if not chunk_dir.is_dir():
+            continue
+        for vfile in sorted(chunk_dir.iterdir()):
+            if vfile.suffix != ".mp4":
+                continue
+            old_fi = int(vfile.stem.replace("file-", ""))
+            if old_fi in files_by_index and files_by_index[old_fi] != vfile:
+                raise ValueError(
+                    f"Duplicate video file index {old_fi} for key '{video_key}' in {source_root}. "
+                    "Cannot merge safely because episodes metadata only stores file_index."
+                )
+            files_by_index[old_fi] = vfile
+    return files_by_index
+
+
+def build_video_file_index_remap(source_root: Path, video_key: str, global_offset: int) -> tuple[dict[int, int], dict[int, Path]]:
+    """Return remap {old_file_index: new_file_index} and source files mapping.
+
+    Remaps sparse/non-contiguous local indices onto a contiguous global index
+    space to avoid collisions when merging multiple datasets.
+    """
+    files_by_index = collect_video_files_by_index(source_root, video_key)
+    remap: dict[int, int] = {}
+    for rank, old_fi in enumerate(sorted(files_by_index.keys())):
+        remap[old_fi] = global_offset + rank
+    return remap, files_by_index
+
+
 def update_int64_col(table: pa.Table, col_name: str, offset: int) -> pa.Table:
     """Add offset to every value in an int64 column."""
     idx = table.schema.get_field_index(col_name)
@@ -114,17 +157,45 @@ def update_int64_col(table: pa.Table, col_name: str, offset: int) -> pa.Table:
     return table.set_column(idx, col_name, new_col)
 
 
-def remap_int64_col(table: pa.Table, col_name: str, remap: dict[int, int]) -> pa.Table:
+def remap_int64_col(table: pa.Table, col_name: str, remap: dict[int, int], strict: bool = False) -> pa.Table:
     """Remap values in an int64 column via a lookup dict (identity for missing keys)."""
     if not remap:
         return table
     idx = table.schema.get_field_index(col_name)
     if idx < 0:
         return table
-    new_col = pa.array(
-        [remap.get(v, v) for v in table.column(col_name).to_pylist()],
-        type=pa.int64(),
-    )
+    values = table.column(col_name).to_pylist()
+    if strict:
+        missing = sorted({v for v in values if v not in remap})
+        if missing:
+            raise ValueError(
+                f"Column '{col_name}' references missing file_index value(s): {missing[:10]}"
+                + (" ..." if len(missing) > 10 else "")
+            )
+
+    new_col = pa.array([remap.get(v, v) for v in values], type=pa.int64())
+    return table.set_column(idx, col_name, new_col)
+
+
+def replace_null_int64_with_value(table: pa.Table, col_name: str, value: int) -> pa.Table:
+    """Replace nulls in an int64 column with a provided fallback value."""
+    idx = table.schema.get_field_index(col_name)
+    if idx < 0:
+        return table
+    values = table.column(col_name).to_pylist()
+    if all(v is not None for v in values):
+        return table
+    new_col = pa.array([value if v is None else v for v in values], type=pa.int64())
+    return table.set_column(idx, col_name, new_col)
+
+
+def set_int64_col_constant(table: pa.Table, col_name: str, value: int) -> pa.Table:
+    """Set every value in an int64 column to a constant."""
+    idx = table.schema.get_field_index(col_name)
+    if idx < 0:
+        return table
+    n = len(table)
+    new_col = pa.array([value] * n, type=pa.int64())
     return table.set_column(idx, col_name, new_col)
 
 
@@ -228,21 +299,11 @@ def merge(source_roots: list[Path], output_root: Path, force: bool) -> Path:
     LOGGER.info("Video keys: %s", video_keys)
 
     # -------------------------------------------------------------------------
-    # Build global task registry
+    # Task registry (collapsed to a single task for all rows)
     # -------------------------------------------------------------------------
-    global_task_to_idx: dict[str, int] = {}
-    local_task_remaps: list[dict[int, int]] = []
-
-    for root in source_roots:
-        local_tasks = read_tasks(root)
-        remap: dict[int, int] = {}
-        for local_idx, task_str in local_tasks.items():
-            if task_str not in global_task_to_idx:
-                global_task_to_idx[task_str] = len(global_task_to_idx)
-            remap[local_idx] = global_task_to_idx[task_str]
-        local_task_remaps.append(remap)
-
-    LOGGER.info("Global task registry: %d task(s)", len(global_task_to_idx))
+    global_task_to_idx: dict[str, int] = {SINGLE_TASK_TEXT: 0}
+    local_task_remaps: list[dict[int, int]] = [{} for _ in source_roots]
+    LOGGER.info("Global task registry: %d task(s) [single-task mode]", len(global_task_to_idx))
 
     # -------------------------------------------------------------------------
     # Process each source
@@ -266,8 +327,19 @@ def merge(source_roots: list[Path], output_root: Path, force: bool) -> Path:
         if data_table is not None:
             data_table = update_int64_col(data_table, "episode_index", global_ep_offset)
             data_table = update_int64_col(data_table, "index", global_frame_offset)
-            data_table = remap_int64_col(data_table, "task_index", task_remap)
+            data_table = set_int64_col_constant(data_table, "task_index", 0)
             all_data_tables.append(data_table)
+
+        # Build robust video file-index remaps for this source dataset.
+        # This prevents collisions when local file indices are sparse.
+        video_index_remaps: dict[str, dict[int, int]] = {}
+        video_source_files: dict[str, dict[int, Path]] = {}
+        for vkey in video_keys:
+            remap, files_by_index = build_video_file_index_remap(
+                source_root, vkey, video_file_offsets[vkey]
+            )
+            video_index_remaps[vkey] = remap
+            video_source_files[vkey] = files_by_index
 
         # --- Episodes parquet (rich per-episode metadata) ---
         episodes_table = read_all_parquets(source_root / "meta" / "episodes")
@@ -277,28 +349,24 @@ def merge(source_roots: list[Path], output_root: Path, force: bool) -> Path:
             episodes_table = update_int64_col(episodes_table, "dataset_to_index", global_frame_offset)
             for vkey in video_keys:
                 fi_col = f"videos/{vkey}/file_index"
-                episodes_table = update_int64_col(episodes_table, fi_col, video_file_offsets[vkey])
+                episodes_table = remap_int64_col(
+                    episodes_table,
+                    fi_col,
+                    video_index_remaps[vkey],
+                    strict=True,
+                )
             all_episodes_tables.append(episodes_table)
 
         # --- Video files: hardlink with new sequential file indices ---
         for vkey in video_keys:
-            vid_root = source_root / "videos" / vkey
-            if not vid_root.exists():
-                continue
-            for chunk_dir in sorted(vid_root.iterdir()):
-                if not chunk_dir.is_dir():
-                    continue
-                for vfile in sorted(chunk_dir.iterdir()):
-                    if vfile.suffix != ".mp4":
-                        continue
-                    old_fi = int(vfile.stem.replace("file-", ""))
-                    new_fi = video_file_offsets[vkey] + old_fi
-                    dst = output_root / "videos" / vkey / "chunk-000" / f"file-{new_fi:03d}.mp4"
-                    link_or_copy(vfile, dst)
+            for old_fi, vfile in sorted(video_source_files[vkey].items()):
+                new_fi = video_index_remaps[vkey][old_fi]
+                dst = output_root / "videos" / vkey / "chunk-000" / f"file-{new_fi:03d}.mp4"
+                link_or_copy(vfile, dst)
 
         # --- Update running offsets ---
         for vkey in video_keys:
-            video_file_offsets[vkey] += count_video_files(source_root, vkey)
+            video_file_offsets[vkey] += len(video_index_remaps[vkey])
 
         stats_path = source_root / "meta" / "stats.json"
         if stats_path.exists():
