@@ -58,8 +58,19 @@ set -uo pipefail
 # Dataset name(s) — one or more basenames of converted LeRobotDataset directories.
 # Pass multiple to train across all datasets jointly, e.g.:
 #   bash run_training.sh 001 002 003
+# To resume from the last checkpoint in the output dir:
+#   bash run_training.sh --resume 001 002 003
 # Defaults to "example" if no argument is given.
-DATASET_NAMES=("${@:-example}")
+RESUME=false
+ARGS=()
+for arg in "$@"; do
+    if [[ "${arg}" == "--resume" ]]; then
+        RESUME=true
+    else
+        ARGS+=("${arg}")
+    fi
+done
+DATASET_NAMES=("${ARGS[@]:-example}")
 
 # UCL scratch disk — local NVMe, no quota, wiped after booking
 SCRATCH_BASE="/scratch0/${USER}"
@@ -181,7 +192,34 @@ for ds in "${DATASET_NAMES[@]}"; do
     DATASET_ROOT_FLAGS="${DATASET_ROOT_FLAGS} ${ds_path}"
 done
 
-# Ensure scratch output directory exists before redirecting logs into it
+# Handle existing output directory
+if [[ -d "${SCRATCH_OUTPUT_DIR}" ]]; then
+    HAS_CHECKPOINTS=false
+    if [[ -d "${SCRATCH_OUTPUT_DIR}/checkpoints" ]] && \
+       [[ -n "$(ls -A "${SCRATCH_OUTPUT_DIR}/checkpoints" 2>/dev/null)" ]]; then
+        HAS_CHECKPOINTS=true
+    fi
+
+    if [[ "${RESUME}" == "true" ]]; then
+        if [[ "${HAS_CHECKPOINTS}" == "false" ]]; then
+            echo "WARNING: --resume passed but no checkpoints found in ${SCRATCH_OUTPUT_DIR}."
+            echo "Starting fresh."
+        else
+            echo "Resuming from last checkpoint in ${SCRATCH_OUTPUT_DIR}/checkpoints/"
+        fi
+    elif [[ "${HAS_CHECKPOINTS}" == "true" ]]; then
+        echo "ERROR: Output directory already contains checkpoints:"
+        echo "  ${SCRATCH_OUTPUT_DIR}/checkpoints/"
+        echo ""
+        echo "To resume training from the last checkpoint, run:"
+        echo "  bash ${SMOLVLA_REPO}/run_training.sh --resume ${DATASET_NAMES[*]}"
+        exit 1
+    else
+        echo "Removing stale output directory (no checkpoints found)..."
+        rm -rf "${SCRATCH_OUTPUT_DIR}"
+    fi
+fi
+
 mkdir -p "${SCRATCH_OUTPUT_DIR}"
 
 # Ensure the persistent rescue directory exists in home
@@ -281,6 +319,9 @@ trap "kill ${SYNC_PID} 2>/dev/null; rescue_checkpoints" EXIT
 #   3. Download SmolVLA base weights to HF_HOME (scratch cache)
 #   4. Write checkpoints and logs to SCRATCH_OUTPUT_DIR (fast scratch NVMe)
 
+RESUME_FLAG=""
+[[ "${RESUME}" == "true" ]] && RESUME_FLAG="--resume"
+
 TRAIN_CMD="cd ${LEROBOT_ROOT} && uv run python ${SMOLVLA_REPO}/main.py \
     --dataset-root ${DATASET_ROOT_FLAGS} \
     --lerobot-root ${LEROBOT_ROOT} \
@@ -294,6 +335,7 @@ TRAIN_CMD="cd ${LEROBOT_ROOT} && uv run python ${SMOLVLA_REPO}/main.py \
     --seed ${SEED} \
     --device cuda \
     --eval-freq 0 \
+    ${RESUME_FLAG} \
     ${AMP_FLAG}"
 
 echo "Training command:"
