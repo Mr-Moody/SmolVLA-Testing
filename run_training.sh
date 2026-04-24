@@ -176,8 +176,8 @@ if [[ ! -d "${VENV_DIR}" ]]; then
     exit 1
 fi
 
-# Validate all datasets exist and build the --dataset-root flags for main.py
-DATASET_ROOT_FLAGS=""
+# Validate all datasets exist
+DATASET_PATHS=()
 for ds in "${DATASET_NAMES[@]}"; do
     ds_path="${SCRATCH_DATASET_ROOT}/${ds}"
     if [[ ! -d "${ds_path}/meta" ]]; then
@@ -191,8 +191,36 @@ for ds in "${DATASET_NAMES[@]}"; do
         echo "      ${USER}@trailbreaker.cs.ucl.ac.uk:/scratch0/${USER}/lerobot_datasets/${ds}/"
         exit 1
     fi
-    DATASET_ROOT_FLAGS="${DATASET_ROOT_FLAGS} ${ds_path}"
+    DATASET_PATHS+=("${ds_path}")
 done
+
+# ---------------------------------------------------------------------------
+# 2b. MERGE DATASETS (if more than one)
+# ---------------------------------------------------------------------------
+# lerobot's LeRobotMultiDataset is not implemented in this version, so we
+# merge at the file level with merge_datasets.py before training.
+
+if [[ "${#DATASET_NAMES[@]}" -gt 1 ]]; then
+    MERGED_DATASET_ROOT="${SCRATCH_DATASET_ROOT}/merged_${DATASET_JOINED}"
+    echo "Multiple datasets detected — merging into ${MERGED_DATASET_ROOT} ..."
+
+    source "${SCRATCH_BASE}/activate_smolvla.sh"
+
+    cd "${LEROBOT_ROOT}" && uv run python "${SMOLVLA_REPO}/merge_datasets.py" \
+        "${DATASET_PATHS[@]}" \
+        --output "${MERGED_DATASET_ROOT}" \
+        --force
+
+    if [[ $? -ne 0 ]]; then
+        echo "ERROR: merge_datasets.py failed. Aborting."
+        exit 1
+    fi
+
+    TRAIN_DATASET_ROOT="${MERGED_DATASET_ROOT}"
+    echo "Merge complete. Training on: ${TRAIN_DATASET_ROOT}"
+else
+    TRAIN_DATASET_ROOT="${DATASET_PATHS[0]}"
+fi
 
 # Handle existing output directory
 if [[ -d "${SCRATCH_OUTPUT_DIR}" ]]; then
@@ -325,7 +353,7 @@ RESUME_FLAG=""
 [[ "${RESUME}" == "true" ]] && RESUME_FLAG="--resume"
 
 TRAIN_CMD="cd ${LEROBOT_ROOT} && uv run python ${SMOLVLA_REPO}/main.py \
-    --dataset-root ${DATASET_ROOT_FLAGS} \
+    --dataset-root ${TRAIN_DATASET_ROOT} \
     --lerobot-root ${LEROBOT_ROOT} \
     --policy-path ${POLICY_PATH} \
     --output-dir ${SCRATCH_OUTPUT_DIR} \
