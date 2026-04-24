@@ -127,12 +127,17 @@ def train_smolvla(
     dataset_info = load_dataset_info(dataset_root)
     repo_id = f"local/{dataset_root.name}"
 
-    LOGGER.info(
-        "Preparing training for dataset '%s' (%d episode(s), %d frame(s)).",
-        dataset_root.name,
-        dataset_info["total_episodes"],
-        dataset_info["total_frames"],
-    )
+    LOGGER.info("Device:   %s", device)
+    LOGGER.info("Dataset:  %s  (%d episode(s), %d frame(s))",
+                dataset_root,
+                dataset_info["total_episodes"],
+                dataset_info["total_frames"])
+    LOGGER.info("Policy:   %s", policy_path)
+    LOGGER.info("Output:   %s", output_dir)
+    LOGGER.info("Steps:    %d  |  batch: %d  |  workers: %d", steps, batch_size, num_workers)
+    LOGGER.info("AMP:      %s  |  seed: %d", use_amp, seed)
+    if episodes:
+        LOGGER.info("Episodes: %s", episodes)
 
     cfg = TrainPipelineConfig(
         dataset=DatasetConfig(
@@ -160,7 +165,8 @@ def train_smolvla(
         eval_freq=eval_freq,
     )
 
-    LOGGER.info("Starting SmolVLA training.")
+    LOGGER.info("Starting SmolVLA training...")
+
     train(cfg)
     LOGGER.info("Training finished. Outputs written to %s", output_dir)
     return output_dir

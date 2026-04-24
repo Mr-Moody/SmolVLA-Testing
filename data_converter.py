@@ -94,6 +94,7 @@ class SmolVLADatasetConverter:
         min_gripper_command: float = DEFAULT_MIN_GRIPPER_COMMAND,
         min_gripper_width_span: float = DEFAULT_MIN_GRIPPER_WIDTH_SPAN,
         episode_report_path: Path | None = None,
+        device: str | None = None,
     ) -> None:
         self.dataset_dir = dataset_dir
         self.output_dir = output_dir
@@ -111,7 +112,7 @@ class SmolVLADatasetConverter:
         self.min_gripper_width_span = min_gripper_width_span
         self.episode_report_path = episode_report_path
 
-        self._device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self._device = torch.device(device if device else ("cuda" if torch.cuda.is_available() else "cpu"))
         LOGGER.info("Device: %s", self._device)
         LOGGER.info("Loading dataset: %s", dataset_dir)
 
@@ -604,6 +605,12 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Optional JSON path for episode classification and suppression report.",
     )
+    parser.add_argument(
+        "--device",
+        type=str,
+        default=None,
+        help="Torch device to use (e.g. cuda, cpu). Defaults to cuda if available.",
+    )
     return parser.parse_args()
 
 
@@ -630,6 +637,7 @@ def main() -> None:
         min_gripper_command=args.min_gripper_command,
         min_gripper_width_span=args.min_gripper_width_span,
         episode_report_path=args.episode_report,
+        device=args.device,
     )
     converter.export()
 
