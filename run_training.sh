@@ -320,15 +320,10 @@ echo "Log file: ${LOG_FILE}"
 echo ""
 
 nohup bash -c "
-    # Re-export environment inside the nohup subshell — nohup does not
-    # inherit all exported vars in every shell configuration.
-    export PIP_CACHE_DIR='${CACHE_DIR}/pip'
-    export UV_CACHE_DIR='${CACHE_DIR}/uv'
-    export HF_HOME='${CACHE_DIR}/huggingface'
-    export TRANSFORMERS_CACHE='${CACHE_DIR}/huggingface/hub'
-    export HF_DATASETS_CACHE='${CACHE_DIR}/huggingface/datasets'
-    export UV_PROJECT_ENVIRONMENT='${VENV_DIR}'
-    export LEROBOT_ROOT='${LEROBOT_ROOT}'
+    # Source the activation shim — this sets PATH (including uv), all cache
+    # dirs, and UV_PROJECT_ENVIRONMENT in one shot. The nohup subshell starts
+    # with a clean environment and will not find uv otherwise.
+    source '${SCRATCH_BASE}/activate_smolvla.sh'
 
     ${TRAIN_CMD}
 " >> "${LOG_FILE}" 2>&1 &
