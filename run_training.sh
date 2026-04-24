@@ -81,8 +81,8 @@ HOME_PROJECT="${HOME}/smolvla_project"
 # lerobot sibling repo root (source code, stored in persistent home)
 LEROBOT_ROOT="${HOME_PROJECT}/lerobot"
 
-# SmolVLA-Testing repo root (your training code, stored in persistent home)
-SMOLVLA_REPO="${HOME_PROJECT}/SmolVLA-Testing"
+# SmolVLA-Testing repo root — on scratch since there is no usable home quota
+SMOLVLA_REPO="${SCRATCH_BASE}/SmolVLA-Testing"
 
 # Dataset root — stored in SCRATCH, not home, because image frames exceed the
 # 10GB home quota. Rsynced here at the start of each booking from your local
