@@ -51,6 +51,8 @@ DEFAULT_CAMERA_TOLERANCE_NS = 150_000_000
 DEFAULT_TEXT_TOLERANCE_NS = 2_000_000_000
 DEFAULT_REPO_OWNER = "local"
 DEFAULT_VCODEC = "h264"
+# ~2s at 30fps per camera; matches lerobot-record / streaming encoding guide default.
+DEFAULT_ENCODER_QUEUE_MAXSIZE = 60
 DEFAULT_BLANK_MAX_STEPS = 1000
 DEFAULT_MIN_GRIPPER_COMMAND = 0.1
 DEFAULT_MIN_GRIPPER_WIDTH_SPAN = 0.002
@@ -88,6 +90,8 @@ class SmolVLADatasetConverter:
         text_tolerance_ns: int = DEFAULT_TEXT_TOLERANCE_NS,
         force_overwrite: bool = False,
         vcodec: str = DEFAULT_VCODEC,
+        encoder_threads: int | None = None,
+        encoder_queue_maxsize: int = DEFAULT_ENCODER_QUEUE_MAXSIZE,
         max_episodes: int | None = None,
         max_steps_per_episode: int | None = None,
         suppress_blank_episodes: bool = True,
@@ -105,6 +109,8 @@ class SmolVLADatasetConverter:
         self.text_tolerance_ns = text_tolerance_ns
         self.force_overwrite = force_overwrite
         self.vcodec = vcodec
+        self.encoder_threads = encoder_threads
+        self.encoder_queue_maxsize = encoder_queue_maxsize
         self.max_episodes = max_episodes
         self.max_steps_per_episode = max_steps_per_episode
         self.suppress_blank_episodes = suppress_blank_episodes
@@ -508,6 +514,11 @@ class SmolVLADatasetConverter:
         tqdm.write(f"Dataset: {self.dataset_dir}")
         tqdm.write(f"Output:  {self.output_dir}")
         tqdm.write(f"Starting conversion: {len(episodes)} episode(s).")
+        tqdm.write(
+            f"Streaming encode: vcodec={self.vcodec}, "
+            f"encoder_threads={self.encoder_threads!r}, "
+            f"encoder_queue_maxsize={self.encoder_queue_maxsize}"
+        )
 
         dataset = LeRobotDataset.create(
             repo_id=self.repo_id,
@@ -517,6 +528,9 @@ class SmolVLADatasetConverter:
             features=self._dataset_features(episodes),
             use_videos=True,
             vcodec=self.vcodec,
+            streaming_encoding=True,
+            encoder_queue_maxsize=self.encoder_queue_maxsize,
+            encoder_threads=self.encoder_threads,
         )
 
         readers: dict[Path, VideoReaderState] = {}
@@ -577,6 +591,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--force", action="store_true", help="Overwrite existing output directory.")
     parser.add_argument("--vcodec", type=str, default=DEFAULT_VCODEC,
                         help="Video codec for LeRobotDataset.create().")
+    parser.add_argument(
+        "--encoder-threads",
+        type=int,
+        default=None,
+        help="Threads per encoder instance (streaming encode). Omit for codec default.",
+    )
+    parser.add_argument(
+        "--encoder-queue-maxsize",
+        type=int,
+        default=DEFAULT_ENCODER_QUEUE_MAXSIZE,
+        help="Max buffered frames per camera during streaming encode (default: %(default)s).",
+    )
     parser.add_argument("--max-episodes", type=int, default=None,
                         help="Limit number of episodes to export.")
     parser.add_argument("--max-steps-per-episode", type=int, default=None,
@@ -635,6 +661,8 @@ def main() -> None:
         text_tolerance_ns=int(args.text_tolerance_ms * 1_000_000.0),
         force_overwrite=args.force,
         vcodec=args.vcodec,
+        encoder_threads=args.encoder_threads,
+        encoder_queue_maxsize=args.encoder_queue_maxsize,
         max_episodes=args.max_episodes,
         max_steps_per_episode=args.max_steps_per_episode,
         suppress_blank_episodes=not args.keep_blank_episodes,
