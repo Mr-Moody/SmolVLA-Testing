@@ -213,6 +213,7 @@ cleaned_datasets/
 lerobot_datasets/
 outputs/
 raw_recordings/
+checkpoints/
 
 # LaTeX build artifacts
 *.aux
@@ -233,3 +234,4 @@ raw_recordings/
 .codex
 .claude
 .vscode/
+trailbreaker_commands_private.md
