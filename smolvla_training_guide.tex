@@ -35,7 +35,7 @@
 \maketitle
 
 \begin{abstract}
-This guide outlines the standard operating procedure for fine-tuning a SmolVLA Vision-Language-Action model for robotic grasping on the UCL TSG Remote GPU Workstations. It covers how to safely route all heavy data away from the strict 10GB disk quota, convert raw robot recordings into a training dataset on the GPU node, launch a resilient background training run, and retrieve the saved model checkpoints.
+This guide documents the exact end-to-end workflow used for a successful SmolVLA run on UCL TSG GPUs with pre-converted datasets (001, 002, 003). It covers scratch/home separation, resilient nohup training, progress monitoring, and reliable retrieval of full checkpoints and logs.
 \end{abstract}
 
 \tableofcontents
@@ -113,75 +113,56 @@ source /scratch0/$USER/activate_smolvla.sh
 \end{lstlisting}
 
 % =============================================================================
-\section{Step 1: Transfer Code Repositories via Rsync}
+\section{Step 1: Sync SmolVLA-Testing to Scratch}
 % =============================================================================
 
-The training pipeline requires two sibling repositories: \texttt{lerobot} (SmolVLA policy and training loop) and \texttt{SmolVLA-Testing} (data converter, training entry point, and scripts).
-
-\begin{tcolorbox}[colback=red!5!white,colframe=red!75!black,title=WARNING: Rsync Clutter]
-Do \textbf{not} run \texttt{rsync} directly into your root \texttt{\char`\~/} folder. Always target a dedicated subdirectory such as \texttt{\char`\~/smolvla\_project/} to avoid accidentally mirroring your local machine's profile into UCL home storage.
-\end{tcolorbox}
-
-Open a terminal on your \textbf{local machine} and run:
+In this run, \texttt{lerobot} already existed in persistent home (\texttt{\char`\~/smolvla\_project/lerobot}). We synced only \texttt{SmolVLA-Testing} from local to scratch on the GPU node:
 
 \begin{lstlisting}[language=bash]
-# Replace 'username' with your UCL CS username
-
-# Transfer the lerobot library (source code only, ~MB)
-rsync -avz --exclude='.venv' --exclude='__pycache__' \
-    /path/to/lerobot/ \
-    username@knuckles.cs.ucl.ac.uk:~/smolvla_project/lerobot/
-
-# Transfer SmolVLA-Testing (source code only, ~MB)
-rsync -avz --exclude='lerobot_datasets' --exclude='raw_recordings' \
-    /path/to/SmolVLA-Testing/ \
-    username@knuckles.cs.ucl.ac.uk:~/smolvla_project/SmolVLA-Testing/
-\end{lstlisting}
-
-The \texttt{--exclude} flags prevent any local dataset directories from accidentally being copied to home. After these two commands, your persistent home should look like:
-
-\begin{lstlisting}
-~/smolvla_project/
-  lerobot/                  <- lerobot source code (~MB)
-  SmolVLA-Testing/
-    main.py
-    data_converter.py
-    setup_scratch.sh
-    run_training.sh
-    convert_all.sh
-    restart_conversion.sh
-    patch_nvenc.py
-    smolvla_training_guide.tex
-\end{lstlisting}
-
-Check quota after rsyncing to confirm it is still safe:
-\begin{lstlisting}[language=bash]
-du -sh ~/
-# Should be well under 1GB
+GPU_NODE="your-gpu-node.cs.ucl.ac.uk"
+rsync -avz --progress \
+    -e "ssh -J $USER@knuckles.cs.ucl.ac.uk" \
+    --exclude 'lerobot_datasets' \
+    --exclude 'raw_recordings' \
+    --exclude 'checkpoints' \
+    /Volumes/ROS2_SSD/SmolVLA-Testing/ \
+    $USER@${GPU_NODE}:/scratch0/$USER/SmolVLA-Testing/
 \end{lstlisting}
 
 % =============================================================================
-\section{Step 2: Transfer Raw Recordings to Scratch}
+\section{Step 2: Transfer Converted LeRobotDataset Directories to Scratch}
 % =============================================================================
 
-Raw episode recordings (ZED camera frames, wrist camera frames, robot state JSON) are large. They \textbf{must} go directly to scratch, not to home.
+For this run, datasets were already processed locally into \texttt{lerobot\_datasets/001}, \texttt{002}, and \texttt{003}. We therefore skip raw-recording transfer and conversion, and copy the converted LeRobotDataset directories directly to scratch.
 
-From your \textbf{local machine}, use the jump host to copy directly into scratch on the GPU node. Replace \texttt{trailbreaker} with your allocated node name:
+From your \textbf{local machine}, use the jump host to copy directly into scratch on your allocated GPU node:
 
 \begin{lstlisting}[language=bash]
-rsync -avz --progress /path/to/raw_recordings/ \
-    -e "ssh -J username@knuckles.cs.ucl.ac.uk" \
-    username@trailbreaker.cs.ucl.ac.uk:/scratch0/username/raw_recordings/
+# Set this once for your current booking
+GPU_NODE="your-gpu-node.cs.ucl.ac.uk"
+
+# 1) Create destination parent directory on the GPU node
+ssh -J $USER@knuckles.cs.ucl.ac.uk $USER@${GPU_NODE} \
+    'mkdir -p /scratch0/$USER/lerobot_datasets'
+
+# 2) Copy converted datasets 001/002/003 from local disk to scratch
+for DS in 001 002 003; do
+    rsync -avzP \
+        -e "ssh -J $USER@knuckles.cs.ucl.ac.uk" \
+        "/Volumes/ROS2_SSD/SmolVLA-Testing/lerobot_datasets/${DS}/" \
+        "$USER@${GPU_NODE}:/scratch0/$USER/lerobot_datasets/${DS}/"
+done
 \end{lstlisting}
 
 After this, confirm the data arrived on the GPU node:
 \begin{lstlisting}[language=bash]
-ls /scratch0/$USER/raw_recordings/
-# Expected: 001  002  003  (or whatever your session IDs are)
-
-du -sh /scratch0/$USER/raw_recordings/
-# Should show the full size without affecting ~/
+ssh -J $USER@knuckles.cs.ucl.ac.uk $USER@${GPU_NODE} \
+    'ls -lah /scratch0/$USER/lerobot_datasets && du -sh /scratch0/$USER/lerobot_datasets/{001,002,003}'
 \end{lstlisting}
+
+\begin{tcolorbox}[colback=yellow!10!white,colframe=orange!80!black,title=Non-blocking Remote Noise]
+You may see \texttt{VBoxManage} warnings when connecting to the node. In this workflow, those messages were noisy shell startup output and did not block \texttt{ssh} or \texttt{rsync}. The transfer blocker was missing parent directories under \texttt{/scratch0/\$USER/}.
+\end{tcolorbox}
 
 % =============================================================================
 \section{Step 3: Connect to the GPU Node}
@@ -190,7 +171,8 @@ du -sh /scratch0/$USER/raw_recordings/
 Once your TSG GPU booking begins, connect via SSH:
 
 \begin{lstlisting}[language=bash]
-ssh -J username@knuckles.cs.ucl.ac.uk username@trailbreaker.cs.ucl.ac.uk
+GPU_NODE="your-gpu-node.cs.ucl.ac.uk"
+ssh -l $USER -J $USER@knuckles.cs.ucl.ac.uk ${GPU_NODE}
 \end{lstlisting}
 
 Alternatively use the \textbf{Apache Guacamole} web interface (URL in your booking confirmation). This opens a Rocky Linux graphical desktop in your browser.
@@ -218,7 +200,7 @@ Run \texttt{setup\_scratch.sh} from the GPU node. This script:
 \end{enumerate}
 
 \begin{lstlisting}[language=bash]
-bash ~/smolvla_project/SmolVLA-Testing/setup_scratch.sh
+bash /scratch0/$USER/SmolVLA-Testing/setup_scratch.sh
 \end{lstlisting}
 
 The setup takes approximately 5--15 minutes. A successful run ends with:
@@ -236,7 +218,7 @@ Patched successfully: .../video_utils.py
 \subsection{The NVENC API Version Mismatch}
 \label{sec:nvenc}
 
-lerobot uses PyAV 15.x, which bundles ffmpeg 7.x. ffmpeg 7.x requires NVENC API 13.0. The UCL TSG trailbreaker GPU driver only exposes NVENC API 12.2, causing encoding to fail immediately with:
+lerobot uses PyAV 15.x, which bundles ffmpeg 7.x. ffmpeg 7.x requires NVENC API 13.0. On current UCL TSG images, the GPU driver often exposes NVENC API 12.2, causing encoding to fail immediately with:
 
 \begin{lstlisting}
 Cannot load nvcuda.dll / Required NVENC API version 13.0, Found 12.2
@@ -249,10 +231,10 @@ Downgrading PyAV is not possible because Python 3.14 (the version on UCL machine
 The patch is applied automatically by \texttt{setup\_scratch.sh}. It is idempotent — safe to re-run if you need to update it.
 
 % =============================================================================
-\section{Step 5: Convert Raw Recordings to LeRobotDataset Format}
+\section{Step 5: Optional Conversion (Skipped in This Run)}
 % =============================================================================
 
-Before training, raw episode recordings must be converted to the LeRobotDataset v3 format that lerobot expects. This step encodes camera frames into \texttt{h264\_nvenc} video files and writes dataset metadata.
+This step is only required when you have not already built \texttt{lerobot\_datasets/<id>} locally. In the April 2026 workflow, conversion was skipped because \texttt{001/002/003} were already available and rsync'd directly to scratch in Step 2.
 
 \textbf{Edit \texttt{convert\_all.sh}} if your session IDs differ from \texttt{001 002 003}:
 
@@ -299,11 +281,22 @@ This contains per-episode success/failure status, episode lengths, and any skipp
 \section{Step 6: Launch the Training Run}
 % =============================================================================
 
-With datasets converted, launch training using \texttt{run\_training.sh}. Pass your dataset name (the basename under \texttt{lerobot\_datasets/}) as the first argument:
+With datasets present in scratch, launch training using \texttt{run\_training.sh}. For this run we jointly trained datasets \texttt{001}, \texttt{002}, and \texttt{003}:
 
 \begin{lstlisting}[language=bash]
-bash ~/smolvla_project/SmolVLA-Testing/run_training.sh 001
+bash /scratch0/$USER/SmolVLA-Testing/run_training.sh 001 002 003
 \end{lstlisting}
+
+Key training configuration in \texttt{run\_training.sh} for future runs:
+\begin{itemize}
+    \item \texttt{BATCH\_SIZE=8}
+    \item \texttt{STEPS=20000}
+    \item \texttt{SAVE\_FREQ=1000} (updated from 500)
+    \item \texttt{LOG\_FREQ=50}
+    \item \texttt{AMP\_FLAG="--use-amp"}
+    \item \texttt{ALLOW\_NEAREST\_FRAME\_FALLBACK=true}
+    \item \texttt{ALLOW\_MISSING\_TASK\_FALLBACK=true}
+\end{itemize}
 
 The script performs pre-flight checks (venv present, dataset valid), then launches \texttt{main.py} under \texttt{nohup}. Outputs:
 
@@ -313,7 +306,7 @@ The script performs pre-flight checks (venv present, dataset valid), then launch
   PID : 12345
 =================================================
   Monitor live output:
-    tail -f /scratch0/$USER/smolvla_outputs/001_smolvla/training.log
+        tail -f /scratch0/$USER/smolvla_outputs/001_002_003.log
 \end{lstlisting}
 
 \textbf{What \texttt{nohup} does:} closing an SSH terminal sends \texttt{SIGHUP} to foreground processes. \texttt{nohup} immunises the training process against this signal.
@@ -327,15 +320,43 @@ The script performs pre-flight checks (venv present, dataset valid), then launch
 \subsection{Check the Training Log}
 
 \begin{lstlisting}[language=bash]
-tail -f /scratch0/$USER/smolvla_outputs/<dataset>_smolvla/training.log
+tail -f /scratch0/$USER/smolvla_outputs/001_002_003.log
 \end{lstlisting}
 
 A healthy run prints a line every \texttt{--log-freq} steps (default: 50). Look for decreasing loss values. Press \texttt{Ctrl+C} to detach without stopping training.
 
+\subsection{One-Command Status Snapshot}
+
+Use this helper to print current step, percent complete, optional ETA, log file path, and a quick GPU summary:
+
+If your remote \texttt{/scratch0/\$USER/SmolVLA-Testing/} copy predates this helper, sync it once from local first:
+
+\begin{lstlisting}[language=bash]
+GPU_NODE="your-gpu-node.cs.ucl.ac.uk"
+rsync -avzP \
+    -e "ssh -J $USER@knuckles.cs.ucl.ac.uk" \
+    /Volumes/ROS2_SSD/SmolVLA-Testing/training_status_snapshot.sh \
+    $USER@${GPU_NODE}:/scratch0/$USER/SmolVLA-Testing/
+\end{lstlisting}
+
+\begin{lstlisting}[language=bash]
+bash /scratch0/$USER/SmolVLA-Testing/training_status_snapshot.sh 001_002_003 20000
+\end{lstlisting}
+
+If you keep \texttt{STEPS=20000} in \texttt{run\_training.sh}, the second argument can be omitted.
+
+To estimate completion from the latest saved checkpoint (\texttt{STEPS=20000}, \texttt{SAVE\_FREQ=1000}):
+\begin{lstlisting}[language=bash]
+latest=$(ls -1 /scratch0/$USER/smolvla_outputs/001_002_003_smolvla/checkpoints/ \
+    | grep -E '^[0-9]+$' | sort -n | tail -1)
+echo "Latest step: ${latest}/20000"
+awk -v s="$latest" 'BEGIN { printf("Progress: %.1f%%\\n", (s/20000)*100) }'
+\end{lstlisting}
+
 \begin{tcolorbox}[colback=red!5!white,colframe=red!75!black,title=Signs of a Silent Failure]
 If the log stops updating, check the last 50 lines for a Python traceback:
 \begin{lstlisting}[language=bash]
-tail -n 50 /scratch0/$USER/smolvla_outputs/<dataset>_smolvla/training.log
+tail -n 50 /scratch0/$USER/smolvla_outputs/001_002_003.log
 \end{lstlisting}
 Common causes: CUDA out-of-memory (reduce \texttt{BATCH\_SIZE} in \texttt{run\_training.sh}), a missing dataset path, or a checkpoint path pointing to a wiped scratch directory.
 \end{tcolorbox}
@@ -367,69 +388,63 @@ Simply \textbf{close the browser tab}. The graphical session remains active. You
 
 Reattach at any time by opening a new SSH session:
 \begin{lstlisting}[language=bash]
-tail -f /scratch0/$USER/smolvla_outputs/<dataset>_smolvla/training.log
+tail -f /scratch0/$USER/smolvla_outputs/001_002_003.log
 \end{lstlisting}
 
 % =============================================================================
 \section{Step 9: Retrieving Checkpoints}
 % =============================================================================
 
-When training ends, the EXIT trap \texttt{rsync}'s outputs to \texttt{\char`\~/smolvla\_project/checkpoints/}. Pull them to your local machine from a \textbf{new terminal on your local machine}:
+The run finished at step \texttt{020000}, but the automatic rescue to home can be incomplete for very large outputs. The reliable end-to-end retrieval path used here was to pull directly from scratch with resumable \texttt{rsync}.
+
+From a \textbf{new terminal on your local machine}:
 
 \begin{lstlisting}[language=bash]
+GPU_NODE="your-gpu-node.cs.ucl.ac.uk"
+mkdir -p /Volumes/ROS2_SSD/SmolVLA-Testing/checkpoints/001_002_003_smolvla_full
+
+# macOS system rsync is 2.6.9, so use --partial + --inplace (no --append-verify)
 rsync -avP \
-    username@knuckles.cs.ucl.ac.uk:~/smolvla_project/checkpoints/ \
-    /path/to/local/SmolVLA-Testing/checkpoints/
+    --partial \
+    --inplace \
+    --timeout=120 \
+    -e "ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=6 -J $USER@knuckles.cs.ucl.ac.uk" \
+    $USER@${GPU_NODE}:/scratch0/$USER/smolvla_outputs/001_002_003_smolvla/ \
+    /Volumes/ROS2_SSD/SmolVLA-Testing/checkpoints/001_002_003_smolvla_full/
+
+# Pull launcher log as well
+mkdir -p /Volumes/ROS2_SSD/SmolVLA-Testing/checkpoints/001_002_003_smolvla_full/logs
+rsync -avP \
+    -e "ssh -J $USER@knuckles.cs.ucl.ac.uk" \
+    $USER@${GPU_NODE}:/scratch0/$USER/smolvla_outputs/001_002_003.log \
+    /Volumes/ROS2_SSD/SmolVLA-Testing/checkpoints/001_002_003_smolvla_full/logs/
+\end{lstlisting}
+
+If transfer drops, run the same command again; it resumes.
+
+Validate final checkpoint coverage locally:
+\begin{lstlisting}[language=bash]
+ls -1 /Volumes/ROS2_SSD/SmolVLA-Testing/checkpoints/001_002_003_smolvla_full/checkpoints/ \
+    | sort -n | tail -n 10
+# Expect tail to include 020000
 \end{lstlisting}
 
 The directory structure:
 \begin{lstlisting}
-~/smolvla_project/checkpoints/
-  001_smolvla/
+checkpoints/001_002_003_smolvla_full/
     checkpoints/
-      step_001000/
-      step_002000/
+            001000/
+            002000/
       ...
-      step_020000/    <- final checkpoint
-    training.log
+            020000/    <- final checkpoint
+    logs/
+            001_002_003.log
 \end{lstlisting}
 
 % =============================================================================
-\section{Step 10: Resuming an Expired Booking}
+\section{End State}
 % =============================================================================
 
-UCL GPU bookings have a maximum of 72 hours. If your run is interrupted:
-
-\begin{enumerate}
-    \item Book a new GPU slot and connect to the new node.
-    \item Re-run \texttt{setup\_scratch.sh} (scratch was wiped on the old node):
-    \begin{lstlisting}[language=bash]
-bash ~/smolvla_project/SmolVLA-Testing/setup_scratch.sh
-    \end{lstlisting}
-    \item If datasets were not yet fully converted, re-rsync raw recordings to scratch on the new node and re-run \texttt{restart\_conversion.sh}.
-    \item If datasets are already converted, re-rsync them from local to the new node's scratch:
-    \begin{lstlisting}[language=bash]
-rsync -avz --progress /path/to/local/lerobot_datasets/001/ \
-    -e "ssh -J username@knuckles.cs.ucl.ac.uk" \
-    username@new-node.cs.ucl.ac.uk:/scratch0/username/lerobot_datasets/001/
-    \end{lstlisting}
-    \item Identify the latest rescued checkpoint in persistent home:
-    \begin{lstlisting}[language=bash]
-ls ~/smolvla_project/checkpoints/001_smolvla/checkpoints/
-    \end{lstlisting}
-    \item Edit \texttt{POLICY\_PATH} in \texttt{run\_training.sh} to point to the rescued checkpoint, then re-launch:
-    \begin{lstlisting}[language=bash]
-# Change this line in run_training.sh:
-#   POLICY_PATH="lerobot/smolvla_base"
-# to:
-#   POLICY_PATH="${HOME_PROJECT}/checkpoints/001_smolvla/checkpoints/step_010000"
-
-bash ~/smolvla_project/SmolVLA-Testing/run_training.sh 001
-    \end{lstlisting}
-\end{enumerate}
-
-\begin{tcolorbox}[colback=yellow!10!white,colframe=orange!80!black,title=NOTE: Step Count Does Not Auto-Resume]
-\texttt{main.py} starts counting from step~0 when initialised from a checkpoint. If you completed 10{,}000 steps previously and want 20{,}000 total, set \texttt{STEPS=10000} in \texttt{run\_training.sh} for the resumed run.
-\end{tcolorbox}
+This workflow completed with final checkpoint \texttt{020000}. For future runs, keep \texttt{SAVE\_FREQ=1000} in \texttt{run\_training.sh} unless you explicitly need denser checkpointing.
 
 \end{document}

@@ -127,7 +127,7 @@ POLICY_PATH="lerobot/smolvla_base"
 BATCH_SIZE=8
 STEPS=20000
 NUM_WORKERS=4
-SAVE_FREQ=500     # checkpoint every N steps
+SAVE_FREQ=1000    # checkpoint every N steps
 LOG_FREQ=50
 SEED=1000
 
