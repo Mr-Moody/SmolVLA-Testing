@@ -9,6 +9,12 @@ let videoLoadGeneration = 0;
 let videoStatusPollers = [];
 let videos = [];
 let seekRafId = null;
+let trimState = {
+  start_s: 0,
+  end_s: 0,
+  dragging: null,
+  dirty: false,
+};
 
 function mediaErrorName(code) {
   if (code === 1) return 'MEDIA_ERR_ABORTED';
@@ -181,7 +187,7 @@ function rebuildVideoGrid(camNames) {
       if (!ep) return;
       const primaryCam = Object.keys(ep.cameras)[0];
       if (!primaryCam) return;
-      const end = ep.cameras[primaryCam].end_s;
+      const end = currentTrimEnd();
       if (videos[0].currentTime >= end - 0.05) {
         pauseAll();
         videos[0].currentTime = end;
@@ -206,6 +212,28 @@ function epDuration() {
   return cams[0].end_s - cams[0].start_s;
 }
 
+function currentEpisode() {
+  return episodes[currentEpIdx] || null;
+}
+
+function primaryCameraName() {
+  const ep = currentEpisode();
+  if (!ep) return null;
+  return Object.keys(ep.cameras)[0] || null;
+}
+
+function currentTrimStart() {
+  const ep = currentEpisode();
+  if (!ep) return 0;
+  return trimState.start_s ?? ep.trim_start_s ?? primaryStart();
+}
+
+function currentTrimEnd() {
+  const ep = currentEpisode();
+  if (!ep) return 0;
+  return trimState.end_s ?? ep.trim_end_s ?? primaryEnd();
+}
+
 function primaryStart() {
   if (!episodes.length) return 0;
   const ep = episodes[currentEpIdx];
@@ -224,6 +252,85 @@ function relativeTime() {
   const v0 = videos[0];
   if (!v0) return 0;
   return Math.max(0, v0.currentTime - primaryStart());
+}
+
+function clampTrimValue(value) {
+  return Math.max(primaryStart(), Math.min(value, primaryEnd()));
+}
+
+function snapTrimValue(value) {
+  const v0 = videos[0];
+  if (!v0) return value;
+  const SNAP_THRESHOLD_S = 0.15;
+  return Math.abs(v0.currentTime - value) <= SNAP_THRESHOLD_S ? v0.currentTime : value;
+}
+
+function updateTrimDirtyState() {
+  const ep = currentEpisode();
+  if (!ep) {
+    trimState.dirty = false;
+    return;
+  }
+  const originalStart = ep.trim_start_s ?? primaryStart();
+  const originalEnd = ep.trim_end_s ?? primaryEnd();
+  trimState.dirty =
+    Math.abs(trimState.start_s - originalStart) > 0.001 ||
+    Math.abs(trimState.end_s - originalEnd) > 0.001;
+}
+
+function updateTrimUi() {
+  const timeline = document.getElementById('trim-timeline');
+  const region = document.getElementById('trim-region');
+  const handleStart = document.getElementById('trim-handle-start');
+  const handleEnd = document.getElementById('trim-handle-end');
+  const playhead = document.getElementById('trim-playhead');
+  const display = document.getElementById('trim-display');
+  const saveBtn = document.getElementById('btn-save-trim');
+  const dur = epDuration();
+
+  if (!timeline || !region || !handleStart || !handleEnd || !playhead || !display || !saveBtn || dur <= 0) {
+    return;
+  }
+
+  const startPct = ((currentTrimStart() - primaryStart()) / dur) * 100;
+  const endPct = ((currentTrimEnd() - primaryStart()) / dur) * 100;
+  const playheadPct = (relativeTime() / dur) * 100;
+
+  region.style.left = `${startPct}%`;
+  region.style.width = `${Math.max(0, endPct - startPct)}%`;
+  handleStart.style.left = `${startPct}%`;
+  handleEnd.style.left = `${endPct}%`;
+  playhead.style.left = `${Math.max(0, Math.min(100, playheadPct))}%`;
+  display.textContent = `${fmt(currentTrimStart() - primaryStart())} - ${fmt(currentTrimEnd() - primaryStart())}`;
+  saveBtn.disabled = !trimState.dirty;
+}
+
+function initializeTrimState() {
+  trimState.start_s = currentEpisode()?.trim_start_s ?? primaryStart();
+  trimState.end_s = currentEpisode()?.trim_end_s ?? primaryEnd();
+  trimState.dragging = null;
+  trimState.dirty = false;
+  updateTrimUi();
+}
+
+function setTrimBoundary(handle, nextValue) {
+  const MIN_TRIM_GAP_S = 0.1;
+  if (handle === 'start') {
+    trimState.start_s = Math.min(snapTrimValue(clampTrimValue(nextValue)), trimState.end_s - MIN_TRIM_GAP_S);
+  } else {
+    trimState.end_s = Math.max(snapTrimValue(clampTrimValue(nextValue)), trimState.start_s + MIN_TRIM_GAP_S);
+  }
+  trimState.start_s = clampTrimValue(trimState.start_s);
+  trimState.end_s = clampTrimValue(trimState.end_s);
+  updateTrimDirtyState();
+  updateTrimUi();
+}
+
+function trimValueFromPointer(clientX) {
+  const timeline = document.getElementById('trim-timeline');
+  const rect = timeline.getBoundingClientRect();
+  const frac = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+  return primaryStart() + frac * epDuration();
 }
 
 // ── Dataset loading ─────────────────────────────────────────────────────────
@@ -251,8 +358,10 @@ async function selectDataset(name) {
     document.getElementById('btn-prev').disabled = true;
     document.getElementById('btn-next').disabled = true;
     document.getElementById('btn-delete').disabled = true;
+    document.getElementById('btn-save-trim').disabled = true;
     document.getElementById('task-input').value = '';
     document.getElementById('ep-annotation-status').textContent = '';
+    document.getElementById('trim-display').textContent = '—';
     pauseAll();
     updateProgressBadge();
     return;
@@ -288,7 +397,11 @@ function loadEpisode(idx) {
     const cam = camNames[i];
     if (!cam) return;
     const info = ep.cameras[cam];
-    const seekTo = () => { v.currentTime = info.start_s; };
+    const primaryCam = camNames[0];
+    const trimOffset = (ep.trim_start_s ?? ep.cameras[primaryCam].start_s) - ep.cameras[primaryCam].start_s;
+    const seekTo = () => {
+      v.currentTime = Math.max(info.start_s, Math.min(info.start_s + trimOffset, info.end_s));
+    };
     if (v.readyState >= 1) {
       seekTo();
     } else {
@@ -321,6 +434,7 @@ function loadEpisode(idx) {
 
   pauseAll();
   updateSeekbar();
+  initializeTrimState();
 }
 
 // ── Playback controls ──────────────────────────────────────────────────────
@@ -329,10 +443,17 @@ function playAll() {
     const ep = episodes[currentEpIdx];
     const camNames = Object.keys(ep.cameras);
     const primaryCam = camNames[0];
-    if (primaryCam && videos[0] && videos[0].currentTime >= ep.cameras[primaryCam].end_s - 0.1) {
+    const trimStart = currentTrimStart();
+    const trimEnd = currentTrimEnd();
+    if (primaryCam && videos[0] && (videos[0].currentTime < trimStart || videos[0].currentTime >= trimEnd - 0.1)) {
       videos.forEach((v, i) => {
         const cam = camNames[i];
-        if (cam) v.currentTime = ep.cameras[cam].start_s;
+        if (!cam) return;
+        const offset = trimStart - ep.cameras[primaryCam].start_s;
+        v.currentTime = Math.max(
+          ep.cameras[cam].start_s,
+          Math.min(ep.cameras[cam].start_s + offset, ep.cameras[cam].end_s),
+        );
       });
     }
   }
@@ -389,6 +510,7 @@ function updateSeekbar() {
   const seekbar = document.getElementById('seekbar');
   seekbar.value = dur > 0 ? (rel / dur) * 1000 : 0;
   document.getElementById('time-display').textContent = `${fmt(rel)} / ${fmt(dur)}`;
+  updateTrimUi();
 }
 
 function seekbarRafLoop() {
@@ -439,6 +561,31 @@ async function submitAnnotation() {
     const body = await res.json().catch(() => ({}));
     showStatus('Error: ' + (body.error || res.statusText), false);
   }
+}
+
+async function saveTrim() {
+  if (!currentDataset || !episodes.length) return;
+  const ep = currentEpisode();
+  const res = await fetch(`/api/datasets/${currentDataset}/episodes/${ep.index}/trim`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      trim_start_s: Number(trimState.start_s.toFixed(4)),
+      trim_end_s: Number(trimState.end_s.toFixed(4)),
+    }),
+  });
+
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    showStatus('Error: ' + (body.error || res.statusText), false);
+    return;
+  }
+
+  ep.trim_start_s = trimState.start_s;
+  ep.trim_end_s = trimState.end_s;
+  updateTrimDirtyState();
+  updateTrimUi();
+  showStatus('Trim saved', true);
 }
 
 async function deleteEpisode() {
@@ -495,6 +642,7 @@ document.getElementById('btn-skip-back').addEventListener('click', () => skipSec
 document.getElementById('btn-skip-fwd').addEventListener('click', () => skipSeconds(5));
 document.getElementById('btn-submit').addEventListener('click', submitAnnotation);
 document.getElementById('btn-delete').addEventListener('click', deleteEpisode);
+document.getElementById('btn-save-trim').addEventListener('click', saveTrim);
 
 document.addEventListener('keydown', e => {
   if (e.target.tagName === 'TEXTAREA' || e.target.tagName === 'INPUT') return;
@@ -514,6 +662,45 @@ seekbar.addEventListener('input', () => {
 });
 seekbar.addEventListener('mouseup', () => { seekSuppressed = false; });
 seekbar.addEventListener('touchend', () => { seekSuppressed = false; });
+
+const trimTimeline = document.getElementById('trim-timeline');
+const trimHandleStart = document.getElementById('trim-handle-start');
+const trimHandleEnd = document.getElementById('trim-handle-end');
+
+function beginTrimDrag(handle, event) {
+  if (!episodes.length) return;
+  trimState.dragging = handle;
+  event.preventDefault();
+  document.body.classList.add('trim-dragging');
+  document.getElementById(`trim-handle-${handle}`).classList.add('dragging');
+  setTrimBoundary(handle, trimValueFromPointer(event.clientX));
+}
+
+function endTrimDrag() {
+  if (!trimState.dragging) return;
+  document.body.classList.remove('trim-dragging');
+  document.getElementById(`trim-handle-${trimState.dragging}`)?.classList.remove('dragging');
+  trimState.dragging = null;
+}
+
+trimHandleStart.addEventListener('mousedown', event => beginTrimDrag('start', event));
+trimHandleEnd.addEventListener('mousedown', event => beginTrimDrag('end', event));
+
+trimTimeline.addEventListener('mousedown', event => {
+  if (!episodes.length) return;
+  if (event.target === trimHandleStart || event.target === trimHandleEnd) return;
+  const targetValue = trimValueFromPointer(event.clientX);
+  const startDist = Math.abs(targetValue - trimState.start_s);
+  const endDist = Math.abs(targetValue - trimState.end_s);
+  beginTrimDrag(startDist <= endDist ? 'start' : 'end', event);
+});
+
+document.addEventListener('mousemove', event => {
+  if (!trimState.dragging) return;
+  setTrimBoundary(trimState.dragging, trimValueFromPointer(event.clientX));
+});
+
+document.addEventListener('mouseup', endTrimDrag);
 
 // ── Boot ──────────────────────────────────────────────────────────────────
 loadDatasets();

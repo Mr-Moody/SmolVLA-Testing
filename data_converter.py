@@ -41,6 +41,7 @@ from dataset_utils import (
     load_annotations,
     load_camera_frames,
     load_text_rows,
+    load_trims,
     read_json,
     read_jsonl,
 )
@@ -130,6 +131,7 @@ class SmolVLADatasetConverter:
         self.episode_rows = read_jsonl(dataset_dir / "episode_events.jsonl")
         self.text_rows = load_text_rows(dataset_dir)
         self._annotations = load_annotations(dataset_dir)
+        self._trims = load_trims(dataset_dir)
         self.camera_frames = load_camera_frames(dataset_dir)
         if self.cameras is not None:
             unknown = set(self.cameras) - set(self.camera_frames)
@@ -138,6 +140,10 @@ class SmolVLADatasetConverter:
             self.camera_frames = {name: self.camera_frames[name] for name in self.cameras if name in self.camera_frames}
         self._camera_timestamps: dict[str, list[int]] = {
             name: [frame.timestamp_ns for frame in frames]
+            for name, frames in self.camera_frames.items()
+        }
+        self._camera_video_seconds: dict[str, list[float]] = {
+            name: self._camera_video_timeline_seconds(frames)
             for name, frames in self.camera_frames.items()
         }
         self._feature_name_cache: dict[str, str] = {
@@ -189,6 +195,83 @@ class SmolVLADatasetConverter:
             return "observation.images.top" if camera_name == self.primary_camera else f"observation.images.{camera_name}"
         default_camera = sorted(self.camera_frames)[0]
         return "observation.images.top" if camera_name == default_camera else f"observation.images.{camera_name}"
+
+    @staticmethod
+    def _camera_video_timeline_seconds(frames: list[CameraFrame]) -> list[float]:
+        if not frames:
+            return []
+        if len(frames) < 2:
+            fps = 30
+        else:
+            deltas = [
+                frames[i + 1].timestamp_ns - frames[i].timestamp_ns
+                for i in range(len(frames) - 1)
+                if frames[i + 1].timestamp_ns > frames[i].timestamp_ns
+            ]
+            fps = max(1, round(1_000_000_000.0 / float(np.median(np.asarray(deltas, dtype=np.float64))))) if deltas else 30
+        return [frame.video_frame_index / fps for frame in frames]
+
+    def _trim_camera_name(self) -> str:
+        if self.primary_camera is not None and self.primary_camera in self.camera_frames:
+            return self.primary_camera
+        return sorted(self.camera_frames)[0]
+
+    def _timestamp_for_video_time(self, camera_name: str, video_time_s: float) -> int | None:
+        video_seconds = self._camera_video_seconds.get(camera_name, [])
+        frames = self.camera_frames.get(camera_name, [])
+        if not video_seconds or not frames:
+            return None
+
+        insert_at = np.searchsorted(np.asarray(video_seconds, dtype=np.float64), float(video_time_s), side="left")
+        candidate_indices: list[int] = []
+        if insert_at < len(video_seconds):
+            candidate_indices.append(int(insert_at))
+        if insert_at > 0:
+            candidate_indices.append(int(insert_at - 1))
+        if not candidate_indices:
+            return None
+
+        best_index = min(candidate_indices, key=lambda idx: abs(video_seconds[idx] - float(video_time_s)))
+        return int(frames[best_index].timestamp_ns)
+
+    def _apply_episode_trim(
+        self,
+        episode_index: int,
+        robot_slice: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        trim = self._trims.get(episode_index)
+        if not trim or not robot_slice:
+            return robot_slice
+
+        camera_name = self._trim_camera_name()
+        trim_start_s = float(trim.get("trim_start_s", 0.0))
+        trim_end_s = float(trim.get("trim_end_s", 0.0))
+        if trim_end_s <= trim_start_s:
+            LOGGER.warning(
+                "Ignoring invalid trim for episode %d: start=%.4fs end=%.4fs",
+                episode_index,
+                trim_start_s,
+                trim_end_s,
+            )
+            return robot_slice
+
+        start_ts = self._timestamp_for_video_time(camera_name, trim_start_s)
+        end_ts = self._timestamp_for_video_time(camera_name, trim_end_s)
+        if start_ts is None or end_ts is None:
+            LOGGER.warning("Could not resolve trim timestamps for episode %d on camera '%s'", episode_index, camera_name)
+            return robot_slice
+
+        trimmed_rows = [
+            row for row in robot_slice
+            if start_ts <= infer_timestamp_ns(row) <= end_ts
+        ]
+        if not trimmed_rows:
+            LOGGER.warning(
+                "Trim removed every step from episode %d; keeping original episode bounds",
+                episode_index,
+            )
+            return robot_slice
+        return trimmed_rows
 
     def _match_camera_frames_batch(
         self, timestamps_ns: list[int], camera_name: str
@@ -431,6 +514,7 @@ class SmolVLADatasetConverter:
             robot_slice = self.robot_rows[start_idx:end_idx]
             if not robot_slice:
                 continue
+            robot_slice = self._apply_episode_trim(episode_index, robot_slice)
             if self.max_steps_per_episode is not None:
                 robot_slice = robot_slice[: self.max_steps_per_episode]
 

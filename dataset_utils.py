@@ -168,6 +168,22 @@ def load_annotations(dataset_dir: Path) -> dict[int, str]:
     return result
 
 
+def load_trims(dataset_dir: Path) -> dict[int, dict[str, float]]:
+    """Load episode-index → trim bounds from trims.jsonl."""
+    path = dataset_dir / "trims.jsonl"
+    if not path.exists():
+        return {}
+    result: dict[int, dict[str, float]] = {}
+    for row in read_jsonl(path):
+        if "episode_index" not in row:
+            continue
+        result[int(row["episode_index"])] = {
+            "trim_start_s": float(row.get("trim_start_s", 0.0)),
+            "trim_end_s": float(row.get("trim_end_s", 0.0)),
+        }
+    return result
+
+
 def save_annotation(dataset_dir: Path, episode_index: int, task: str) -> None:
     """Write/update annotation for one episode in annotations.jsonl (last write wins per episode)."""
     import datetime
