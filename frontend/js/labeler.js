@@ -745,11 +745,11 @@ function updateProgressBadge() {
 }
 
 // ── Annotation submit ─────────────────────────────────────────────────────
-async function submitAnnotation() {
+async function submitAnnotation(silent = false) {
   if (!currentDataset || !episodes.length) return;
   const task = document.getElementById('task-input').value.trim();
   if (!task) {
-    showStatus('Please enter a task description.', false);
+    if (!silent) showStatus('Please enter a task description.', false);
     return;
   }
   const ep = episodes[currentEpIdx];
@@ -765,14 +765,15 @@ async function submitAnnotation() {
     annoStatus.className = 'anno-status labeled';
     document.getElementById('task-input').classList.add('has-annotation');
     updateProgressBadge();
-    showStatus('Saved', true);
+    if (!silent) showStatus('Saved', true);
   } else {
     const body = await res.json().catch(() => ({}));
-    showStatus('Error: ' + (body.error || res.statusText), false);
+    if (!silent) showStatus('Error: ' + (body.error || res.statusText), false);
+    throw new Error(body.error || res.statusText);
   }
 }
 
-async function saveTrim() {
+async function saveTrim(silent = false) {
   if (!currentDataset || !episodes.length) return;
   const ep = currentEpisode();
   const res = await fetch(`/api/datasets/${currentDataset}/episodes/${ep.index}/trim`, {
@@ -786,18 +787,18 @@ async function saveTrim() {
 
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
-    showStatus('Error: ' + (body.error || res.statusText), false);
-    return;
+    if (!silent) showStatus('Error: ' + (body.error || res.statusText), false);
+    throw new Error(body.error || res.statusText);
   }
 
   ep.trim_start_s = trimState.start_s;
   ep.trim_end_s = trimState.end_s;
   updateTrimDirtyState();
   updateTrimUi();
-  showStatus('Trim saved', true);
+  if (!silent) showStatus('Trim saved', true);
 }
 
-async function saveSubtasks() {
+async function saveSubtasks(silent = false) {
   if (!currentDataset || !episodes.length) return;
   const ep = currentEpisode();
   const trimStart = currentTrimStart();
@@ -817,10 +818,11 @@ async function saveSubtasks() {
     ep.subtasks = subtasks;
     subtaskState.dirty = false;
     updateSubtaskUi();
-    showStatus('Subtasks saved', true);
+    if (!silent) showStatus('Subtasks saved', true);
   } else {
     const body = await res.json().catch(() => ({}));
-    showStatus('Error: ' + (body.error || res.statusText), false);
+    if (!silent) showStatus('Error: ' + (body.error || res.statusText), false);
+    throw new Error(body.error || res.statusText);
   }
 }
 
@@ -883,7 +885,29 @@ document.getElementById('btn-delete').addEventListener('click', deleteEpisode);
 document.getElementById('btn-save-trim').addEventListener('click', saveTrim);
 document.getElementById('btn-save-subtasks').addEventListener('click', saveSubtasks);
 
+async function saveAll() {
+  if (!currentDataset || !episodes.length) return;
+  const task = document.getElementById('task-input').value.trim();
+  const toSave = [];
+  if (task) toSave.push(() => submitAnnotation(true));
+  if (trimState.dirty) toSave.push(() => saveTrim(true));
+  if (subtaskState.dirty) toSave.push(() => saveSubtasks(true));
+  if (!toSave.length) { showStatus('Nothing to save', true); return; }
+  const errors = await Promise.allSettled(toSave.map(fn => fn()));
+  const failed = errors.filter(r => r.status === 'rejected');
+  if (failed.length) {
+    showStatus('Error: ' + failed[0].reason?.message, false);
+  } else {
+    showStatus('Saved', true);
+  }
+}
+
 document.addEventListener('keydown', e => {
+  if ((e.ctrlKey || e.metaKey) && e.code === 'KeyS') {
+    e.preventDefault();
+    saveAll();
+    return;
+  }
   if (e.target.tagName === 'TEXTAREA' || e.target.tagName === 'INPUT') return;
   if (e.code === 'Space') { e.preventDefault(); togglePlay(); }
   if (e.code === 'ArrowLeft' || e.code === 'ArrowRight') {
