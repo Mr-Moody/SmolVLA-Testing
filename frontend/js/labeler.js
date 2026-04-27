@@ -647,10 +647,21 @@ document.getElementById('btn-save-trim').addEventListener('click', saveTrim);
 document.addEventListener('keydown', e => {
   if (e.target.tagName === 'TEXTAREA' || e.target.tagName === 'INPUT') return;
   if (e.code === 'Space') { e.preventDefault(); togglePlay(); }
-  if (e.code === 'ArrowLeft') skipSeconds(-5);
-  if (e.code === 'ArrowRight') skipSeconds(5);
-  if (e.code === 'ArrowUp') loadEpisode(currentEpIdx - 1);
-  if (e.code === 'ArrowDown') loadEpisode(currentEpIdx + 1);
+  if (e.code === 'ArrowLeft' || e.code === 'ArrowRight') {
+    e.preventDefault();
+    if (e.ctrlKey || e.metaKey) {
+      const sel = document.getElementById('dataset-select');
+      const dir = e.code === 'ArrowLeft' ? -1 : 1;
+      const next = sel.selectedIndex + dir;
+      if (next >= 0 && next < sel.options.length) {
+        sel.selectedIndex = next;
+        selectDataset(sel.value);
+      }
+    } else {
+      if (e.code === 'ArrowLeft') loadEpisode(currentEpIdx - 1);
+      else loadEpisode(currentEpIdx + 1);
+    }
+  }
 });
 
 const seekbar = document.getElementById('seekbar');
