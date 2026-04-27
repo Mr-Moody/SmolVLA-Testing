@@ -40,6 +40,7 @@ from dataset_utils import (
     infer_timestamp_ns,
     load_annotations,
     load_camera_frames,
+    load_subtasks,
     load_text_rows,
     load_trims,
     read_json,
@@ -132,6 +133,7 @@ class SmolVLADatasetConverter:
         self.text_rows = load_text_rows(dataset_dir)
         self._annotations = load_annotations(dataset_dir)
         self._trims = load_trims(dataset_dir)
+        self._subtasks = load_subtasks(dataset_dir)
         self.camera_frames = load_camera_frames(dataset_dir)
         if self.cameras is not None:
             unknown = set(self.cameras) - set(self.camera_frames)
@@ -271,7 +273,58 @@ class SmolVLADatasetConverter:
                 episode_index,
             )
             return robot_slice
+        LOGGER.info(
+            "Episode %d trimmed: %d → %d steps (%.3f s – %.3f s)",
+            episode_index, len(robot_slice), len(trimmed_rows), trim_start_s, trim_end_s,
+        )
         return trimmed_rows
+
+    def _resolve_subtask_phases(
+        self,
+        episode_index: int,
+    ) -> list[dict[str, Any]] | None:
+        """Convert subtask video-second boundaries to robot-timestamp ranges.
+
+        Returns a list of phase dicts with keys: phase, start_ns, end_ns, start_s, end_s.
+        Returns None if no subtask data exists or timestamps cannot be resolved.
+        """
+        phases = self._subtasks.get(episode_index)
+        if not phases:
+            return None
+        camera_name = self._trim_camera_name()
+        resolved: list[dict[str, Any]] = []
+        for phase in phases:
+            start_ts = self._timestamp_for_video_time(camera_name, float(phase["start_s"]))
+            end_ts = self._timestamp_for_video_time(camera_name, float(phase["end_s"]))
+            if start_ts is None or end_ts is None:
+                LOGGER.warning(
+                    "Could not resolve subtask timestamps for episode %d phase '%s'; skipping subtasks",
+                    episode_index, phase.get("phase", "?"),
+                )
+                return None
+            resolved.append({
+                "phase": phase.get("phase", ""),
+                "start_ns": start_ts,
+                "end_ns": end_ts,
+                "start_s": float(phase["start_s"]),
+                "end_s": float(phase["end_s"]),
+            })
+        return resolved
+
+    @staticmethod
+    def _subtask_for_step(
+        timestamp_ns: int,
+        resolved_phases: list[dict[str, Any]],
+    ) -> str:
+        """Return the phase ID for a step timestamp, assigning the closest phase if between boundaries."""
+        for phase in resolved_phases:
+            if phase["start_ns"] <= timestamp_ns <= phase["end_ns"]:
+                return phase["phase"]
+        # Assign to closest phase when timestamp falls in a small inter-phase gap.
+        return min(
+            resolved_phases,
+            key=lambda p: min(abs(p["start_ns"] - timestamp_ns), abs(p["end_ns"] - timestamp_ns)),
+        )["phase"]
 
     def _match_camera_frames_batch(
         self, timestamps_ns: list[int], camera_name: str
@@ -557,10 +610,30 @@ class SmolVLADatasetConverter:
                 synced_text_values.extend(item["text"] for item in alignment if item["text"])
 
             output_index = len(episodes)
+            # Use episode_index (boundary position) so annotation/trim/subtask lookups
+            # stay consistent when earlier episodes have empty robot slices and are skipped.
             task = self._annotations.get(
-                output_index,
+                episode_index,
                 self._dominant_episode_text(synced_text_values, fallback=f"episode_{output_index:06d}"),
             )
+
+            resolved_phases = self._resolve_subtask_phases(episode_index)
+            if resolved_phases:
+                ep_start_ns = step_timestamps[0]
+                for step in steps:
+                    step["subtask"] = self._subtask_for_step(step["timestamp_ns"], resolved_phases)
+                # Rebase phase times to be episode-relative (seconds from first step).
+                subtask_phases_output = [
+                    {
+                        "phase": p["phase"],
+                        "start_s": round(max(0.0, (p["start_ns"] - ep_start_ns) / 1e9), 4),
+                        "end_s": round(max(0.0, (p["end_ns"] - ep_start_ns) / 1e9), 4),
+                    }
+                    for p in resolved_phases
+                ]
+            else:
+                subtask_phases_output = None
+
             quality = self._episode_quality(steps)
             episodes.append({
                 "episode_index": output_index,
@@ -568,6 +641,7 @@ class SmolVLADatasetConverter:
                 "steps": steps,
                 "text_alignment": text_alignment,
                 "quality": quality,
+                "subtask_phases": subtask_phases_output,
             })
 
         LOGGER.info("Built %d episode(s).", len(episodes))
@@ -652,6 +726,23 @@ class SmolVLADatasetConverter:
         finally:
             for reader in readers.values():
                 reader.capture.release()
+
+        subtask_rows = [
+            {"episode_index": ep["episode_index"], "phases": ep["subtask_phases"]}
+            for ep in episodes
+            if ep.get("subtask_phases")
+        ]
+        if subtask_rows:
+            subtasks_path = self.output_dir / "subtasks.jsonl"
+            with subtasks_path.open("w", encoding="utf-8") as f:
+                for row in subtask_rows:
+                    f.write(json.dumps(row) + "\n")
+            LOGGER.info(
+                "Wrote subtask phase metadata for %d/%d episode(s) to %s",
+                len(subtask_rows), len(episodes), subtasks_path,
+            )
+        else:
+            LOGGER.info("No subtask annotations found; subtasks.jsonl not written.")
 
         tqdm.write(f"Conversion complete. Output: {self.output_dir}")
         return self.output_dir

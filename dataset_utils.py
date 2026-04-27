@@ -184,6 +184,22 @@ def load_trims(dataset_dir: Path) -> dict[int, dict[str, float]]:
     return result
 
 
+def load_subtasks(dataset_dir: Path) -> dict[int, list[dict[str, Any]]]:
+    """Load subtask phases from subtasks.jsonl → {episode_index: [phase_dicts]}."""
+    path = dataset_dir / "subtasks.jsonl"
+    if not path.exists():
+        return {}
+    result: dict[int, list[dict[str, Any]]] = {}
+    for row in read_jsonl(path):
+        idx = row.get("episode_index")
+        if idx is None:
+            continue
+        phases = row.get("subtasks", [])
+        if isinstance(phases, list):
+            result[int(idx)] = phases
+    return result
+
+
 def save_annotation(dataset_dir: Path, episode_index: int, task: str) -> None:
     """Write/update annotation for one episode in annotations.jsonl (last write wins per episode)."""
     import datetime
