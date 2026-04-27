@@ -1,3 +1,12 @@
+// ── Constants ─────────────────────────────────────────────────────────────
+const SUBTASK_PHASES = [
+  { id: 'reach',     label: 'Move to Object',   color: 'rgba(99,102,241,0.82)'  },
+  { id: 'grasp',     label: 'Pick Up',           color: 'rgba(168,85,247,0.82)'  },
+  { id: 'transport', label: 'Move to Target',    color: 'rgba(6,182,212,0.82)'   },
+  { id: 'release',   label: 'Place',             color: 'rgba(52,211,153,0.82)'  },
+  { id: 'retract',   label: 'Move Away',         color: 'rgba(245,158,11,0.82)'  },
+];
+
 // ── State ──────────────────────────────────────────────────────────────────
 let datasets = [];
 let episodes = [];
@@ -13,6 +22,11 @@ let trimState = {
   start_s: 0,
   end_s: 0,
   dragging: null,
+  dirty: false,
+};
+let subtaskState = {
+  boundaries: [],       // 4 absolute video-time values dividing 5 phases
+  draggingBoundary: null,
   dirty: false,
 };
 
@@ -333,6 +347,166 @@ function trimValueFromPointer(clientX) {
   return primaryStart() + frac * epDuration();
 }
 
+// ── Subtask timeline ───────────────────────────────────────────────────────
+function buildSubtaskTimeline() {
+  const timeline = document.getElementById('subtask-timeline');
+  const labelsEl = document.getElementById('subtask-time-labels');
+  if (!timeline || !labelsEl) return;
+
+  timeline.innerHTML = '';
+  labelsEl.innerHTML = '';
+
+  SUBTASK_PHASES.forEach((phase, i) => {
+    const seg = document.createElement('div');
+    seg.className = 'subtask-segment';
+    seg.id = `subtask-seg-${i}`;
+    seg.style.background = phase.color;
+    const label = document.createElement('span');
+    label.className = 'subtask-segment-label';
+    label.textContent = phase.label;
+    seg.appendChild(label);
+    timeline.appendChild(seg);
+  });
+
+  for (let i = 0; i < 4; i++) {
+    const handle = document.createElement('div');
+    handle.className = 'subtask-boundary';
+    handle.id = `subtask-boundary-${i}`;
+    const line = document.createElement('div');
+    line.className = 'subtask-boundary-line';
+    handle.appendChild(line);
+    handle.addEventListener('mousedown', e => beginSubtaskDrag(i, e));
+    timeline.appendChild(handle);
+  }
+
+  const playhead = document.createElement('div');
+  playhead.id = 'subtask-playhead';
+  timeline.appendChild(playhead);
+
+  for (let i = 0; i < 4; i++) {
+    const label = document.createElement('span');
+    label.className = 'subtask-time-label';
+    label.id = `subtask-time-${i}`;
+    labelsEl.appendChild(label);
+  }
+}
+
+function initializeSubtaskState() {
+  const ep = currentEpisode();
+  subtaskState.draggingBoundary = null;
+  subtaskState.dirty = false;
+
+  if (!ep) {
+    subtaskState.boundaries = [];
+    updateSubtaskUi();
+    return;
+  }
+
+  const trimStart = currentTrimStart();
+  const trimEnd = currentTrimEnd();
+  const trimDur = trimEnd - trimStart;
+
+  if (ep.subtasks && ep.subtasks.length === 5) {
+    subtaskState.boundaries = [
+      ep.subtasks[0].end_s,
+      ep.subtasks[1].end_s,
+      ep.subtasks[2].end_s,
+      ep.subtasks[3].end_s,
+    ];
+  } else {
+    subtaskState.boundaries = [
+      trimStart + trimDur * 0.2,
+      trimStart + trimDur * 0.4,
+      trimStart + trimDur * 0.6,
+      trimStart + trimDur * 0.8,
+    ];
+  }
+  updateSubtaskUi();
+}
+
+function subtaskBoundaryFromPointer(clientX) {
+  const timeline = document.getElementById('subtask-timeline');
+  if (!timeline) return currentTrimStart();
+  const rect = timeline.getBoundingClientRect();
+  const frac = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+  return currentTrimStart() + frac * (currentTrimEnd() - currentTrimStart());
+}
+
+function updateSubtaskBoundary(idx, value) {
+  const MIN_GAP = 0.05;
+  const trimStart = currentTrimStart();
+  const trimEnd = currentTrimEnd();
+  const allBounds = [trimStart, ...subtaskState.boundaries, trimEnd];
+  const minVal = allBounds[idx] + MIN_GAP;
+  const maxVal = allBounds[idx + 2] - MIN_GAP;
+  subtaskState.boundaries[idx] = Math.max(minVal, Math.min(value, maxVal));
+  subtaskState.dirty = true;
+  updateSubtaskUi();
+}
+
+function beginSubtaskDrag(idx, event) {
+  if (!episodes.length) return;
+  subtaskState.draggingBoundary = idx;
+  event.preventDefault();
+  document.body.classList.add('subtask-dragging');
+  document.getElementById(`subtask-boundary-${idx}`)?.classList.add('dragging');
+  updateSubtaskBoundary(idx, subtaskBoundaryFromPointer(event.clientX));
+}
+
+function endSubtaskDrag() {
+  if (subtaskState.draggingBoundary === null) return;
+  document.body.classList.remove('subtask-dragging');
+  document.getElementById(`subtask-boundary-${subtaskState.draggingBoundary}`)?.classList.remove('dragging');
+  subtaskState.draggingBoundary = null;
+}
+
+function updateSubtaskUi() {
+  const saveBtn = document.getElementById('btn-save-subtasks');
+  if (!episodes.length || !subtaskState.boundaries.length) {
+    if (saveBtn) saveBtn.disabled = true;
+    return;
+  }
+
+  const trimStart = currentTrimStart();
+  const trimEnd = currentTrimEnd();
+  const trimDur = trimEnd - trimStart;
+  if (trimDur <= 0) return;
+
+  const allBounds = [trimStart, ...subtaskState.boundaries, trimEnd];
+  const start = primaryStart();
+
+  SUBTASK_PHASES.forEach((_, i) => {
+    const seg = document.getElementById(`subtask-seg-${i}`);
+    if (!seg) return;
+    const leftPct = ((allBounds[i] - trimStart) / trimDur) * 100;
+    const rightPct = ((allBounds[i + 1] - trimStart) / trimDur) * 100;
+    seg.style.left = `${leftPct}%`;
+    seg.style.width = `${Math.max(0, rightPct - leftPct)}%`;
+  });
+
+  for (let i = 0; i < 4; i++) {
+    const handle = document.getElementById(`subtask-boundary-${i}`);
+    if (handle) {
+      const pct = ((subtaskState.boundaries[i] - trimStart) / trimDur) * 100;
+      handle.style.left = `${pct}%`;
+    }
+    const timeLabel = document.getElementById(`subtask-time-${i}`);
+    if (timeLabel) {
+      const pct = ((subtaskState.boundaries[i] - trimStart) / trimDur) * 100;
+      timeLabel.style.left = `${pct}%`;
+      timeLabel.textContent = fmt(subtaskState.boundaries[i] - start);
+    }
+  }
+
+  const playhead = document.getElementById('subtask-playhead');
+  if (playhead && videos[0]) {
+    const pct = ((videos[0].currentTime - trimStart) / trimDur) * 100;
+    playhead.style.left = `${Math.max(0, Math.min(100, pct))}%`;
+  }
+
+  if (saveBtn) saveBtn.disabled = !subtaskState.dirty;
+}
+
 // ── Dataset loading ─────────────────────────────────────────────────────────
 async function loadDatasets() {
   const res = await fetch('/api/datasets');
@@ -359,9 +533,12 @@ async function selectDataset(name) {
     document.getElementById('btn-next').disabled = true;
     document.getElementById('btn-delete').disabled = true;
     document.getElementById('btn-save-trim').disabled = true;
+    document.getElementById('btn-save-subtasks').disabled = true;
     document.getElementById('task-input').value = '';
     document.getElementById('ep-annotation-status').textContent = '';
     document.getElementById('trim-display').textContent = '—';
+    subtaskState.boundaries = [];
+    subtaskState.dirty = false;
     pauseAll();
     updateProgressBadge();
     return;
@@ -435,6 +612,7 @@ function loadEpisode(idx) {
   pauseAll();
   updateSeekbar();
   initializeTrimState();
+  initializeSubtaskState();
 }
 
 // ── Playback controls ──────────────────────────────────────────────────────
@@ -465,13 +643,43 @@ function playAll() {
 
 function pauseAll() {
   videos.forEach(v => v.pause());
-  document.getElementById('btn-playpause').innerHTML = '<span class="btn-icon">▶</span> Play';
+  document.getElementById('btn-playpause').innerHTML = '<span class="btn-icon">&#9654;</span>&nbsp;Play';
   isPlaying = false;
   stopSeekbarAnimation();
 }
 
 function togglePlay() {
   if (isPlaying) pauseAll(); else playAll();
+}
+
+function jumpToStart() {
+  if (!episodes.length) return;
+  const ep = episodes[currentEpIdx];
+  const camNames = Object.keys(ep.cameras);
+  const primaryCam = camNames[0];
+  if (!primaryCam) return;
+  const trimStart = currentTrimStart();
+  const offset = trimStart - ep.cameras[primaryCam].start_s;
+  videos.forEach((v, i) => {
+    const cam = camNames[i];
+    if (!cam) return;
+    v.currentTime = Math.max(ep.cameras[cam].start_s, ep.cameras[cam].start_s + offset);
+  });
+}
+
+function jumpToEnd() {
+  if (!episodes.length) return;
+  const ep = episodes[currentEpIdx];
+  const camNames = Object.keys(ep.cameras);
+  const primaryCam = camNames[0];
+  if (!primaryCam) return;
+  const trimEnd = currentTrimEnd();
+  const offset = trimEnd - ep.cameras[primaryCam].start_s;
+  videos.forEach((v, i) => {
+    const cam = camNames[i];
+    if (!cam) return;
+    v.currentTime = Math.min(ep.cameras[cam].start_s + offset, ep.cameras[cam].end_s);
+  });
 }
 
 function skipSeconds(delta) {
@@ -511,6 +719,7 @@ function updateSeekbar() {
   seekbar.value = dur > 0 ? (rel / dur) * 1000 : 0;
   document.getElementById('time-display').textContent = `${fmt(rel)} / ${fmt(dur)}`;
   updateTrimUi();
+  updateSubtaskUi();
 }
 
 function seekbarRafLoop() {
@@ -588,6 +797,33 @@ async function saveTrim() {
   showStatus('Trim saved', true);
 }
 
+async function saveSubtasks() {
+  if (!currentDataset || !episodes.length) return;
+  const ep = currentEpisode();
+  const trimStart = currentTrimStart();
+  const trimEnd = currentTrimEnd();
+  const allBounds = [trimStart, ...subtaskState.boundaries, trimEnd];
+  const subtasks = SUBTASK_PHASES.map((phase, i) => ({
+    phase: phase.id,
+    start_s: Number(allBounds[i].toFixed(4)),
+    end_s: Number(allBounds[i + 1].toFixed(4)),
+  }));
+  const res = await fetch(`/api/datasets/${currentDataset}/episodes/${ep.index}/subtasks`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ subtasks }),
+  });
+  if (res.ok) {
+    ep.subtasks = subtasks;
+    subtaskState.dirty = false;
+    updateSubtaskUi();
+    showStatus('Subtasks saved', true);
+  } else {
+    const body = await res.json().catch(() => ({}));
+    showStatus('Error: ' + (body.error || res.statusText), false);
+  }
+}
+
 async function deleteEpisode() {
   if (!currentDataset || !episodes.length) return;
   const ep = episodes[currentEpIdx];
@@ -638,11 +874,14 @@ document.getElementById('jump-input').addEventListener('keydown', e => {
   if (e.key === 'Enter') document.getElementById('btn-go').click();
 });
 document.getElementById('btn-playpause').addEventListener('click', togglePlay);
+document.getElementById('btn-jump-start').addEventListener('click', jumpToStart);
+document.getElementById('btn-jump-end').addEventListener('click', jumpToEnd);
 document.getElementById('btn-skip-back').addEventListener('click', () => skipSeconds(-5));
 document.getElementById('btn-skip-fwd').addEventListener('click', () => skipSeconds(5));
 document.getElementById('btn-submit').addEventListener('click', submitAnnotation);
 document.getElementById('btn-delete').addEventListener('click', deleteEpisode);
 document.getElementById('btn-save-trim').addEventListener('click', saveTrim);
+document.getElementById('btn-save-subtasks').addEventListener('click', saveSubtasks);
 
 document.addEventListener('keydown', e => {
   if (e.target.tagName === 'TEXTAREA' || e.target.tagName === 'INPUT') return;
@@ -707,11 +946,19 @@ trimTimeline.addEventListener('mousedown', event => {
 });
 
 document.addEventListener('mousemove', event => {
-  if (!trimState.dragging) return;
-  setTrimBoundary(trimState.dragging, trimValueFromPointer(event.clientX));
+  if (trimState.dragging) {
+    setTrimBoundary(trimState.dragging, trimValueFromPointer(event.clientX));
+  }
+  if (subtaskState.draggingBoundary !== null) {
+    updateSubtaskBoundary(subtaskState.draggingBoundary, subtaskBoundaryFromPointer(event.clientX));
+  }
 });
 
-document.addEventListener('mouseup', endTrimDrag);
+document.addEventListener('mouseup', () => {
+  endTrimDrag();
+  endSubtaskDrag();
+});
 
 // ── Boot ──────────────────────────────────────────────────────────────────
+buildSubtaskTimeline();
 loadDatasets();

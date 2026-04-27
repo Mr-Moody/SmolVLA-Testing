@@ -335,6 +335,32 @@ def _write_annotations(dataset_dir: Path, annotations: dict[int, str]) -> None:
       }) + "\n")
 
 
+def load_subtasks(dataset_dir: Path) -> dict[int, list[dict]]:
+  """Load subtask phases from subtasks.jsonl → {episode_index: [phase_dicts]}."""
+  path = dataset_dir / "subtasks.jsonl"
+  if not path.exists():
+    return {}
+  result: dict[int, list[dict]] = {}
+  for row in read_jsonl(path):
+    idx = row.get("episode_index")
+    if idx is None:
+      continue
+    subtasks = row.get("subtasks", [])
+    if isinstance(subtasks, list):
+      result[int(idx)] = subtasks
+  return result
+
+
+def _write_subtasks(dataset_dir: Path, subtasks_by_ep: dict[int, list[dict]]) -> None:
+  path = dataset_dir / "subtasks.jsonl"
+  with path.open("w", encoding="utf-8") as handle:
+    for episode_index in sorted(subtasks_by_ep):
+      handle.write(json.dumps({
+        "episode_index": episode_index,
+        "subtasks": subtasks_by_ep[episode_index],
+      }) + "\n")
+
+
 def load_trims(dataset_dir: Path) -> dict[int, dict[str, float]]:
   """Load trim points from trims.jsonl → {episode_index: {trim_start_s, trim_end_s}}."""
   path = dataset_dir / "trims.jsonl"
@@ -417,6 +443,16 @@ def _delete_episode_marker(dataset_dir: Path, ep_idx: int) -> None:
       reindexed_trims[new_idx] = trim_data
     _write_trims(dataset_dir, reindexed_trims)
 
+  subtasks_data = load_subtasks(dataset_dir)
+  if subtasks_data:
+    reindexed_subtasks: dict[int, list[dict]] = {}
+    for old_idx, ep_subtasks in subtasks_data.items():
+      if old_idx == ep_idx:
+        continue
+      new_idx = old_idx - 1 if old_idx > ep_idx else old_idx
+      reindexed_subtasks[new_idx] = ep_subtasks
+    _write_subtasks(dataset_dir, reindexed_subtasks)
+
 
 def _discover_datasets() -> list[dict[str, Any]]:
   """Return sorted list of {name, episode_count, labeled_count} dicts."""
@@ -453,6 +489,7 @@ def _episode_list(dataset_name: str) -> list[dict[str, Any]]:
     boundaries = find_episode_boundaries(robot_rows, ep_rows)
     annotations = load_annotations(dataset_dir)
     trims = load_trims(dataset_dir)
+    subtasks_by_ep = load_subtasks(dataset_dir)
 
     # Load camera frames for timestamp→video-frame mapping
     cameras_root = dataset_dir / "cameras"
@@ -506,6 +543,7 @@ def _episode_list(dataset_name: str) -> list[dict[str, Any]]:
             "annotation": annotations.get(ep_idx),
             "trim_start_s": trim["trim_start_s"] if trim else None,
             "trim_end_s": trim["trim_end_s"] if trim else None,
+            "subtasks": subtasks_by_ep.get(ep_idx, []),
         })
 
     return episodes
@@ -583,6 +621,24 @@ def api_trim(name: str, ep_idx: int):
         trims = load_trims(dataset_dir)
         trims[ep_idx] = {"trim_start_s": round(trim_start, 4), "trim_end_s": round(trim_end, 4)}
         _write_trims(dataset_dir, trims)
+        return jsonify({"ok": True})
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+
+
+@app.route("/api/datasets/<name>/episodes/<int:ep_idx>/subtasks", methods=["POST"])
+def api_subtasks(name: str, ep_idx: int):
+    dataset_dir = CLEANED_DATASETS_ROOT / name
+    if not dataset_dir.exists():
+        return jsonify({"error": "dataset not found"}), 404
+    body = request.get_json(silent=True) or {}
+    subtasks = body.get("subtasks")
+    if not isinstance(subtasks, list):
+        return jsonify({"error": "subtasks must be a list"}), 400
+    try:
+        all_subtasks = load_subtasks(dataset_dir)
+        all_subtasks[ep_idx] = subtasks
+        _write_subtasks(dataset_dir, all_subtasks)
         return jsonify({"ok": True})
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500

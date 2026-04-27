@@ -299,6 +299,20 @@ button:disabled { opacity: 0.28; cursor: not-allowed; }
   border-color: var(--border-2);
 }
 
+#btn-jump-start, #btn-jump-end {
+  color: var(--text-3);
+  background: transparent;
+  border-color: transparent;
+  font-size: 11px;
+  padding: 5px 7px;
+}
+#btn-jump-start:hover:not(:disabled),
+#btn-jump-end:hover:not(:disabled) {
+  color: var(--text-2);
+  background: var(--surface-2);
+  border-color: var(--border-2);
+}
+
 .btn-primary {
   background: var(--accent);
   border-color: var(--accent);
@@ -437,17 +451,19 @@ video {
   flex-shrink: 0;
   background: var(--surface-0);
   border-top: 1px solid var(--border-1);
-  padding: 8px 14px 7px;
+  padding: 7px 14px 8px;
   display: flex;
   flex-direction: column;
   gap: 6px;
 }
 
-#seek-row {
+#ctrl-row {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 4px;
 }
+
+.ctrl-flex { flex: 1; }
 
 #time-display {
   font-size: 11px;
@@ -455,13 +471,12 @@ video {
   color: var(--text-3);
   white-space: nowrap;
   min-width: 82px;
-  text-align: center;
+  text-align: right;
   font-feature-settings: "tnum";
   flex-shrink: 0;
 }
 
-.seekbar-wrap {
-  flex: 1;
+.seekbar-row {
   display: flex;
   align-items: center;
 }
@@ -597,10 +612,14 @@ video {
   font-feature-settings: "tnum";
 }
 
-#btn-row {
-  display: flex;
-  align-items: center;
-  gap: 4px;
+.panel-label {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-3);
+  user-select: none;
+  flex-shrink: 0;
 }
 
 
@@ -610,25 +629,26 @@ video {
   flex-shrink: 0;
   background: var(--surface-0);
   border-top: 1px solid var(--border-1);
-  padding: 8px 14px 10px;
+  padding: 0 14px 8px;
   display: flex;
   flex-direction: column;
-  gap: 6px;
 }
 
-.anno-meta {
+.anno-section {
+  padding: 7px 0 5px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.anno-section + .anno-section {
+  border-top: 1px solid var(--border-1);
+}
+
+.anno-header {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-}
-
-.anno-label {
-  font-size: 10px;
-  font-weight: 600;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-  color: var(--text-3);
-  user-select: none;
+  gap: 8px;
 }
 
 .anno-status {
@@ -639,10 +659,19 @@ video {
 }
 .anno-status.labeled { color: var(--green); }
 
+.anno-hint {
+  font-size: 10px;
+  color: var(--text-3);
+  opacity: 0.7;
+  user-select: none;
+}
+
 #submit-row {
   display: flex;
   align-items: center;
   gap: 6px;
+  padding-top: 7px;
+  border-top: 1px solid var(--border-1);
 }
 
 #status-msg {
@@ -654,3 +683,108 @@ video {
 }
 #status-msg.ok  { color: var(--green); opacity: 1; }
 #status-msg.err { color: var(--red);   opacity: 1; }
+
+
+/* ── Subtask timeline ────────────────────────────────────────────────────── */
+
+#subtask-timeline-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+#subtask-timeline {
+  width: 100%;
+  height: 28px;
+  position: relative;
+  border-radius: var(--r-sm);
+  overflow: hidden;
+  user-select: none;
+  background: var(--surface-2);
+  border: 1px solid var(--border-2);
+}
+
+.subtask-segment {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+
+.subtask-segment-label {
+  font-size: 8.5px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.88);
+  pointer-events: none;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  padding: 0 5px;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
+}
+
+.subtask-boundary {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 14px;
+  transform: translateX(-50%);
+  cursor: ew-resize;
+  z-index: 5;
+  display: flex;
+  align-items: stretch;
+  justify-content: center;
+}
+
+.subtask-boundary-line {
+  width: 2px;
+  background: rgba(0, 0, 0, 0.45);
+  flex-shrink: 0;
+  pointer-events: none;
+  transition: background var(--t);
+}
+
+.subtask-boundary:hover .subtask-boundary-line,
+.subtask-boundary.dragging .subtask-boundary-line {
+  background: rgba(255, 255, 255, 0.85);
+  box-shadow: 0 0 4px rgba(255, 255, 255, 0.3);
+}
+
+#subtask-playhead {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: rgba(255, 255, 255, 0.55);
+  border-radius: 1px;
+  pointer-events: none;
+  z-index: 4;
+  transform: translateX(-50%);
+}
+
+#subtask-time-labels {
+  position: relative;
+  height: 13px;
+}
+
+.subtask-time-label {
+  position: absolute;
+  font-size: 9px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-3);
+  transform: translateX(-50%);
+  pointer-events: none;
+  white-space: nowrap;
+  font-feature-settings: "tnum";
+}
+
+body.trim-dragging,
+body.subtask-dragging {
+  cursor: ew-resize;
+  user-select: none;
+}
