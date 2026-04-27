@@ -59,6 +59,18 @@ DEFAULT_BLANK_MAX_STEPS = 1000
 DEFAULT_MIN_GRIPPER_COMMAND = 0.1
 DEFAULT_MIN_GRIPPER_WIDTH_SPAN = 0.002
 
+# Natural-language task strings used per-step when subtask phases are annotated.
+# Each key matches the phase id saved by the labeler; values are the task strings
+# written into the LeRobotDataset frame and used for SmolVLA language conditioning.
+SUBTASK_PHASE_TASKS: dict[str, str] = {
+    "approach_can":  "Move the gripper to the soup can",
+    "grasp_can":     "Close the gripper around the soup can",
+    "lift_can":      "Lift the soup can off the table",
+    "move_to_tray":  "Carry the soup can to the green tray",
+    "release_can":   "Place the soup can into the tray",
+    "retract_arm":   "Move the arm away from the tray",
+}
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
 LOGGER = logging.getLogger(__name__)
 
@@ -367,19 +379,91 @@ class SmolVLADatasetConverter:
         return Counter(synced_texts).most_common(1)[0][0]
 
     def _state_vector(self, row: dict[str, Any]) -> np.ndarray:
-        robot_state = row["robot_state"]
-        joint_positions = [float(v) for v in robot_state.get("q", [])]
-        gripper_width = float(robot_state.get("gripper_width", 0.0))
-        state = joint_positions + [gripper_width]
+        rs = row["robot_state"]
+        q   = [float(v) for v in rs.get("q", [])]
+        dq  = [float(v) for v in rs.get("dq", [])]
+        tcp_pos    = [float(v) for v in rs.get("tcp_position_xyz", [])]
+        tcp_orient = [float(v) for v in rs.get("tcp_orientation_xyzw", [])]
+        gripper    = [float(rs.get("gripper_width", 0.0))]
+        state = q + dq + tcp_pos + tcp_orient + gripper
         if not state:
             raise KeyError("robot_state.q was missing; cannot build observation.state")
         return np.asarray(state, dtype=np.float32)
 
+    def _state_dimension_names(self) -> list[str]:
+        """Build named dimension list from the first robot row's actual field sizes."""
+        rs = self.robot_rows[0]["robot_state"]
+        names: list[str] = []
+        names += [f"q_{i}"  for i in range(len(rs.get("q",  [])))]
+        names += [f"dq_{i}" for i in range(len(rs.get("dq", [])))]
+        names += ["tcp_x", "tcp_y", "tcp_z"][: len(rs.get("tcp_position_xyz", []))]
+        names += ["tcp_qx", "tcp_qy", "tcp_qz", "tcp_qw"][: len(rs.get("tcp_orientation_xyzw", []))]
+        names += ["gripper_width"]
+        return names
+
+    def _action_dimension_names(self) -> list[str]:
+        """Build named action dimension list from the first robot row's actual field sizes."""
+        ea = self.robot_rows[0]["executed_action"]
+        names: list[str] = []
+        names += ["delta_x", "delta_y", "delta_z"][: len(ea.get("cartesian_delta_translation", []))]
+        names += ["delta_rx", "delta_ry", "delta_rz"][: len(ea.get("cartesian_delta_rotation", []))]
+        names += ["gripper_command"]
+        return names
+
+    def _warn_problematic_feature_std(self, episodes: list[dict[str, Any]]) -> None:
+        """Warn when per-dataset feature std is zero/near-zero to flag normalization risks."""
+        state_names = self._state_dimension_names()
+        action_names = self._action_dimension_names()
+
+        state_rows = [
+            step["observation.state"]
+            for episode in episodes
+            for step in episode["steps"]
+        ]
+        action_rows = [
+            step["action"]
+            for episode in episodes
+            for step in episode["steps"]
+        ]
+        if not state_rows or not action_rows:
+            return
+
+        state_std = np.std(np.stack(state_rows, axis=0), axis=0)
+        action_std = np.std(np.stack(action_rows, axis=0), axis=0)
+
+        near_zero_state_indices = np.where(state_std <= 1e-6)[0].tolist()
+        if near_zero_state_indices:
+            details = ", ".join(
+                f"{state_names[idx]} (std={float(state_std[idx]):.3e})"
+                for idx in near_zero_state_indices
+            )
+            LOGGER.warning(
+                "State dimension(s) with near-zero std in dataset '%s': %s. "
+                "This can amplify MEAN_STD normalization on single-dataset runs; "
+                "cross-dataset stat aggregation is recommended.",
+                self.dataset_dir.name,
+                details,
+            )
+
+        zero_action_indices = np.where(action_std <= 1e-12)[0].tolist()
+        if zero_action_indices:
+            details = ", ".join(
+                f"{action_names[idx]} (std={float(action_std[idx]):.3e})"
+                for idx in zero_action_indices
+            )
+            LOGGER.warning(
+                "Action dimension(s) with zero std in dataset '%s': %s. "
+                "Keeping these action dimensions (expected for some subsets); "
+                "cross-dataset stats typically restore non-zero variance.",
+                self.dataset_dir.name,
+                details,
+            )
+
     def _action_vector(self, row: dict[str, Any]) -> np.ndarray:
-        executed_action = row["executed_action"]
-        translation = [float(v) for v in executed_action.get("cartesian_delta_translation", [])]
-        rotation = [float(v) for v in executed_action.get("cartesian_delta_rotation", [])]
-        gripper = [float(executed_action.get("gripper_command", 0.0))]
+        ea = row["executed_action"]
+        translation = [float(v) for v in ea.get("cartesian_delta_translation", [])]
+        rotation    = [float(v) for v in ea.get("cartesian_delta_rotation", [])]
+        gripper     = [float(ea.get("gripper_command", 0.0))]
         action = translation + rotation + gripper
         if not action:
             raise KeyError("executed_action was missing; cannot build action")
@@ -506,16 +590,28 @@ class SmolVLADatasetConverter:
         first_step = episodes[0]["steps"][0]
         state_dim = int(first_step["observation.state"].shape[0])
         action_dim = int(first_step["action"].shape[0])
+        state_names = self._state_dimension_names()
+        action_names = self._action_dimension_names()
+
+        if len(state_names) != state_dim:
+            raise ValueError(
+                f"State feature name count ({len(state_names)}) does not match state dim ({state_dim})."
+            )
+        if len(action_names) != action_dim:
+            raise ValueError(
+                f"Action feature name count ({len(action_names)}) does not match action dim ({action_dim})."
+            )
+
         features: dict[str, Any] = {
             "observation.state": {
                 "dtype": "float32",
                 "shape": (state_dim,),
-                "names": {"motors": [f"state_{i}" for i in range(state_dim)]},
+                "names": {"motors": state_names},
             },
             "action": {
                 "dtype": "float32",
                 "shape": (action_dim,),
-                "names": {"motors": [f"action_{i}" for i in range(action_dim)]},
+                "names": {"motors": action_names},
             },
         }
         for camera_name, frames in self.camera_frames.items():
@@ -667,6 +763,7 @@ class SmolVLADatasetConverter:
             )
 
         self._write_episode_report(all_episodes, episodes, suppressed_episodes)
+        self._warn_problematic_feature_std(episodes)
 
         if suppressed_episodes:
             suppressed_indices = [episode["episode_index"] for episode in suppressed_episodes]
@@ -705,9 +802,21 @@ class SmolVLADatasetConverter:
             for episode_number, episode in enumerate(pbar, start=1):
                 ep_start = time.monotonic()
                 pbar.set_postfix({"ep": f"{episode_number}/{total}", "steps": len(episode["steps"])})
+                has_subtasks = bool(episode.get("subtask_phases"))
+                if has_subtasks:
+                    LOGGER.info(
+                        "Episode %d: writing per-step subtask tasks (%d phases)",
+                        episode["episode_index"], len(episode["subtask_phases"]),
+                    )
                 for step in episode["steps"]:
+                    subtask_id: str | None = step.get("subtask") if has_subtasks else None
+                    step_task = (
+                        SUBTASK_PHASE_TASKS.get(subtask_id, episode["task"])
+                        if subtask_id
+                        else episode["task"]
+                    )
                     frame_dict: dict[str, Any] = {
-                        "task": episode["task"],
+                        "task": step_task,
                         "observation.state": torch.from_numpy(step["observation.state"].copy()),
                         "action": torch.from_numpy(step["action"].copy()),
                     }
@@ -718,9 +827,10 @@ class SmolVLADatasetConverter:
                     dataset.add_frame(frame_dict)
                 dataset.save_episode(parallel_encoding=True)
                 elapsed = time.monotonic() - ep_start
+                task_desc = f"subtask phases" if has_subtasks else f"task: {episode['task']}"
                 tqdm.write(
                     f"  Episode {episode_number}/{total} done in {elapsed:.1f}s"
-                    f" — {len(episode['steps'])} steps, task: {episode['task']}"
+                    f" — {len(episode['steps'])} steps, {task_desc}"
                 )
             dataset.finalize()
         finally:
