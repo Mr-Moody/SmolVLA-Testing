@@ -186,19 +186,8 @@
   <span id="ep-info">Episode — / —</span>
 </div>
 
-<!-- ── Video grid ── -->
-<div id="video-grid">
-  <div class="cam-panel" id="panel-cam0">
-    <div class="cam-label" id="label-cam0">camera 0</div>
-    <video id="video0" preload="auto" playsinline></video>
-    <div class="video-fallback" id="fallback-cam0"></div>
-  </div>
-  <div class="cam-panel" id="panel-cam1">
-    <div class="cam-label" id="label-cam1">camera 1</div>
-    <video id="video1" preload="auto" playsinline></video>
-    <div class="video-fallback" id="fallback-cam1"></div>
-  </div>
-</div>
+<!-- ── Video grid — panels injected dynamically by JS ── -->
+<div id="video-grid"></div>
 
 <!-- ── Transport controls ── -->
 <div id="controls">
@@ -233,11 +222,8 @@ let currentEpIdx = 0;       // index into episodes[]
 let isPlaying = false;
 let seekSuppressed = false; // prevent seekbar feedback loop
 let videoLoadGeneration = 0;
-const videoStatusPollers = [null, null];
-
-const video0 = document.getElementById('video0');
-const video1 = document.getElementById('video1');
-const videos = [video0, video1];
+let videoStatusPollers = [];  // one entry per active camera panel
+let videos = [];              // video elements, rebuilt by rebuildVideoGrid()
 
 function mediaErrorName(code) {
   if (code === 1) return 'MEDIA_ERR_ABORTED';
@@ -360,16 +346,68 @@ async function prepareAndLoadCamera(cam, i, generation) {
   }, 350);
 }
 
-videos.forEach((v, i) => {
-  v.addEventListener('loadstart', () => hideFallback(i));
-  v.addEventListener('loadeddata', () => hideFallback(i));
-  v.addEventListener('error', () => {
-    const camLabel = document.getElementById(`label-cam${i}`)?.textContent || `camera ${i}`;
-    const errCode = v.error ? v.error.code : 0;
-    const reason = `Browser media error: ${mediaErrorName(errCode)} (${errCode}).`;
-    showFallback(i, camLabel, v.currentSrc || v.src || '#', reason);
+// ── Dynamic video grid ─────────────────────────────────────────────────────
+function rebuildVideoGrid(camNames) {
+  // Clear all running pollers from the previous layout.
+  videoStatusPollers.forEach((_, i) => clearVideoPoller(i));
+  videoStatusPollers = camNames.map(() => null);
+
+  const grid = document.getElementById('video-grid');
+  grid.innerHTML = '';
+  videos = [];
+
+  camNames.forEach((cam, i) => {
+    const panel = document.createElement('div');
+    panel.className = 'cam-panel';
+    panel.id = `panel-cam${i}`;
+
+    const label = document.createElement('div');
+    label.className = 'cam-label';
+    label.id = `label-cam${i}`;
+    label.textContent = cam;
+
+    const video = document.createElement('video');
+    video.id = `video${i}`;
+    video.preload = 'auto';
+    video.setAttribute('playsinline', '');
+
+    const fallback = document.createElement('div');
+    fallback.className = 'video-fallback';
+    fallback.id = `fallback-cam${i}`;
+
+    panel.appendChild(label);
+    panel.appendChild(video);
+    panel.appendChild(fallback);
+    grid.appendChild(panel);
+
+    video.addEventListener('loadstart', () => hideFallback(i));
+    video.addEventListener('loadeddata', () => hideFallback(i));
+    video.addEventListener('error', () => {
+      const camLabel = document.getElementById(`label-cam${i}`)?.textContent || `camera ${i}`;
+      const errCode = video.error ? video.error.code : 0;
+      const reason = `Browser media error: ${mediaErrorName(errCode)} (${errCode}).`;
+      showFallback(i, camLabel, video.currentSrc || video.src || '#', reason);
+    });
+
+    videos.push(video);
   });
-});
+
+  // Primary video drives the seekbar and enforces episode bounds.
+  if (videos[0]) {
+    videos[0].addEventListener('timeupdate', () => {
+      const ep = episodes[currentEpIdx];
+      if (!ep) return;
+      const primaryCam = Object.keys(ep.cameras)[0];
+      if (!primaryCam) return;
+      const end = ep.cameras[primaryCam].end_s;
+      if (videos[0].currentTime >= end - 0.05) {
+        pauseAll();
+        videos[0].currentTime = end;
+      }
+      updateSeekbar();
+    });
+  }
+}
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 function fmt(sec) {
@@ -403,7 +441,9 @@ function primaryEnd() {
 
 // Returns the current playback position within the episode (0 … duration)
 function relativeTime() {
-  return Math.max(0, video0.currentTime - primaryStart());
+  const v0 = videos[0];
+  if (!v0) return 0;
+  return Math.max(0, v0.currentTime - primaryStart());
 }
 
 // ── Dataset loading ─────────────────────────────────────────────────────────
@@ -454,26 +494,17 @@ function loadEpisode(idx) {
   const ep = episodes[idx];
   const camNames = Object.keys(ep.cameras);
 
-  // Update camera labels and video sources
-  camNames.forEach((cam, i) => {
-    const labelEl = document.getElementById(`label-cam${i}`);
-    const videoEl = document.getElementById(`video${i}`);
-    const panelEl = document.getElementById(`panel-cam${i}`);
-    if (labelEl) labelEl.textContent = cam;
-    if (videoEl && panelEl) {
-      panelEl.style.display = 'flex';
-      hideFallback(i);
-      prepareAndLoadCamera(cam, i, generation);
-    }
-  });
-
-  // Hide unused camera panels
-  for (let i = camNames.length; i < 2; i++) {
-    const panelEl = document.getElementById(`panel-cam${i}`);
-    if (panelEl) panelEl.style.display = 'none';
-    clearVideoPoller(i);
-    hideFallback(i);
+  // Rebuild the grid whenever the camera set changes (new dataset, first load, etc.)
+  if (camNames.length !== videos.length ||
+      camNames.some((cam, i) => document.getElementById(`label-cam${i}`)?.textContent !== cam)) {
+    rebuildVideoGrid(camNames);
   }
+
+  // Kick off video preparation for each camera
+  camNames.forEach((cam, i) => {
+    hideFallback(i);
+    prepareAndLoadCamera(cam, i, generation);
+  });
 
   // Seek to episode start once enough data is available
   videos.forEach((v, i) => {
@@ -681,20 +712,7 @@ seekbar.addEventListener('input', () => {
 seekbar.addEventListener('mouseup', () => { seekSuppressed = false; });
 seekbar.addEventListener('touchend', () => { seekSuppressed = false; });
 
-// video0 drives the seekbar and enforces episode bounds
-video0.addEventListener('timeupdate', () => {
-  const ep = episodes[currentEpIdx];
-  if (!ep) return;
-  const camNames = Object.keys(ep.cameras);
-  const primaryCam = camNames[0];
-  if (!primaryCam) return;
-  const end = ep.cameras[primaryCam].end_s;
-  if (video0.currentTime >= end - 0.05) {
-    pauseAll();
-    video0.currentTime = end;
-  }
-  updateSeekbar();
-});
+// timeupdate listener is attached inside rebuildVideoGrid() on videos[0].
 
 // ── Boot ──────────────────────────────────────────────────────────────────
 loadDatasets();

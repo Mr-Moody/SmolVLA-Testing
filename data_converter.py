@@ -86,6 +86,7 @@ class SmolVLADatasetConverter:
         output_dir: Path,
         repo_id: str,
         primary_camera: str | None = None,
+        cameras: list[str] | None = None,
         camera_tolerance_ns: int = DEFAULT_CAMERA_TOLERANCE_NS,
         text_tolerance_ns: int = DEFAULT_TEXT_TOLERANCE_NS,
         force_overwrite: bool = False,
@@ -105,6 +106,7 @@ class SmolVLADatasetConverter:
         self.output_dir = output_dir
         self.repo_id = repo_id
         self.primary_camera = primary_camera
+        self.cameras = cameras
         self.camera_tolerance_ns = camera_tolerance_ns
         self.text_tolerance_ns = text_tolerance_ns
         self.force_overwrite = force_overwrite
@@ -129,6 +131,11 @@ class SmolVLADatasetConverter:
         self.text_rows = load_text_rows(dataset_dir)
         self._annotations = load_annotations(dataset_dir)
         self.camera_frames = load_camera_frames(dataset_dir)
+        if self.cameras is not None:
+            unknown = set(self.cameras) - set(self.camera_frames)
+            if unknown:
+                raise ValueError(f"--cameras specified unknown camera(s): {sorted(unknown)}. Available: {sorted(self.camera_frames)}")
+            self.camera_frames = {name: self.camera_frames[name] for name in self.cameras if name in self.camera_frames}
         self._camera_timestamps: dict[str, list[int]] = {
             name: [frame.timestamp_ns for frame in frames]
             for name, frames in self.camera_frames.items()
@@ -582,6 +589,10 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--primary-camera", type=str, default=None,
                         help="Camera name to map to observation.images.top.")
+    parser.add_argument(
+        "--cameras", type=str, default=None,
+        help="Comma-separated list of camera names to include. Omit to use all cameras.",
+    )
     parser.add_argument("--camera-tolerance-ms", type=float,
                         default=DEFAULT_CAMERA_TOLERANCE_NS / 1_000_000.0,
                         help="Maximum robot-to-camera sync error in milliseconds.")
@@ -652,11 +663,13 @@ def main() -> None:
         raise FileNotFoundError(f"Dataset '{args.dataset_name}' not found at {dataset_dir}")
     output_dir = args.output_root / args.dataset_name
     repo_id = args.repo_id or f"{DEFAULT_REPO_OWNER}/{args.dataset_name}"
+    cameras = [c.strip() for c in args.cameras.split(",")] if args.cameras else None
     converter = SmolVLADatasetConverter(
         dataset_dir=dataset_dir,
         output_dir=output_dir,
         repo_id=repo_id,
         primary_camera=args.primary_camera,
+        cameras=cameras,
         camera_tolerance_ns=int(args.camera_tolerance_ms * 1_000_000.0),
         text_tolerance_ns=int(args.text_tolerance_ms * 1_000_000.0),
         force_overwrite=args.force,
