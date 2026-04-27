@@ -36,27 +36,54 @@
   <main id="video-grid"></main>
 
   <div id="transport">
-    <div id="seek-row">
-      <span id="time-display">0:00 / 0:00</span>
-      <div class="seekbar-wrap">
-        <input id="seekbar" type="range" min="0" max="1000" value="0" step="1">
-      </div>
-    </div>
-    <div id="btn-row">
+    <div id="ctrl-row">
+      <button id="btn-jump-start" title="Jump to trim start">&#9664;&#124;</button>
       <button id="btn-skip-back">&#8249; 5s</button>
       <button id="btn-playpause"><span class="btn-icon">&#9654;</span>&nbsp;Play</button>
       <button id="btn-skip-fwd">5s &#8250;</button>
+      <button id="btn-jump-end" title="Jump to trim end">&#124;&#9654;</button>
+      <div class="ctrl-flex"></div>
+      <span id="time-display">0:00 / 0:00</span>
+    </div>
+    <div class="seekbar-row">
+      <input id="seekbar" type="range" min="0" max="1000" value="0" step="1">
+    </div>
+    <div id="trim-row">
+      <span class="panel-label">Crop</span>
+      <div id="trim-timeline-wrap">
+        <div id="trim-timeline">
+          <div id="trim-region"></div>
+          <div id="trim-handle-start" class="trim-handle trim-handle-start"></div>
+          <div id="trim-handle-end" class="trim-handle trim-handle-end"></div>
+          <div id="trim-playhead"></div>
+        </div>
+      </div>
+      <span id="trim-display">—</span>
+      <button id="btn-save-trim">Save</button>
     </div>
   </div>
 
   <div id="annotation-area">
-    <div class="anno-meta">
-      <span class="anno-label">task</span>
-      <span id="ep-annotation-status" class="anno-status"></span>
+    <div class="anno-section">
+      <div class="anno-header">
+        <span class="panel-label">Task</span>
+        <span id="ep-annotation-status" class="anno-status"></span>
+      </div>
+      <textarea id="task-input" placeholder="Describe the manipulation task (e.g. pick up the red cube and place it in the bin)" rows="2"></textarea>
     </div>
-    <textarea id="task-input" placeholder="Describe the manipulation task performed in this episode…" rows="2"></textarea>
+    <div class="anno-section" id="subtask-section">
+      <div class="anno-header">
+        <span class="panel-label">Subtasks</span>
+        <span class="anno-hint">drag boundaries to set phase timing</span>
+      </div>
+      <div id="subtask-timeline-wrap">
+        <div id="subtask-timeline"></div>
+        <div id="subtask-time-labels"></div>
+      </div>
+    </div>
     <div id="submit-row">
-      <button id="btn-submit" class="btn-primary">Save label</button>
+      <button id="btn-submit" class="btn-primary">Save annotation</button>
+      <button id="btn-save-subtasks" disabled>Save subtasks</button>
       <button id="btn-delete" class="btn-danger">Delete episode</button>
       <span id="status-msg"></span>
     </div>
