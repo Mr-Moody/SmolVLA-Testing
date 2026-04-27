@@ -8,6 +8,7 @@ let seekSuppressed = false;
 let videoLoadGeneration = 0;
 let videoStatusPollers = [];
 let videos = [];
+let seekRafId = null;
 
 function mediaErrorName(code) {
   if (code === 1) return 'MEDIA_ERR_ABORTED';
@@ -185,7 +186,6 @@ function rebuildVideoGrid(camNames) {
         pauseAll();
         videos[0].currentTime = end;
       }
-      updateSeekbar();
     });
   }
 }
@@ -335,14 +335,16 @@ function playAll() {
     }
   }
   videos.forEach(v => { if (v.src) v.play().catch(() => {}); });
-  document.getElementById('btn-playpause').textContent = '❚❚ Pause';
+  document.getElementById('btn-playpause').innerHTML = '<span class="btn-icon pause-bars"></span> Pause';
   isPlaying = true;
+  startSeekbarAnimation();
 }
 
 function pauseAll() {
   videos.forEach(v => v.pause());
-  document.getElementById('btn-playpause').textContent = '▶ Play';
+  document.getElementById('btn-playpause').innerHTML = '<span class="btn-icon">▶</span> Play';
   isPlaying = false;
+  stopSeekbarAnimation();
 }
 
 function togglePlay() {
@@ -383,8 +385,25 @@ function updateSeekbar() {
   const dur = epDuration();
   const rel = relativeTime();
   const seekbar = document.getElementById('seekbar');
-  seekbar.value = dur > 0 ? Math.round((rel / dur) * 1000) : 0;
+  seekbar.value = dur > 0 ? (rel / dur) * 1000 : 0;
   document.getElementById('time-display').textContent = `${fmt(rel)} / ${fmt(dur)}`;
+}
+
+function seekbarRafLoop() {
+  updateSeekbar();
+  seekRafId = requestAnimationFrame(seekbarRafLoop);
+}
+
+function startSeekbarAnimation() {
+  if (!seekRafId) seekRafId = requestAnimationFrame(seekbarRafLoop);
+}
+
+function stopSeekbarAnimation() {
+  if (seekRafId) {
+    cancelAnimationFrame(seekRafId);
+    seekRafId = null;
+  }
+  updateSeekbar();
 }
 
 function updateProgressBadge() {

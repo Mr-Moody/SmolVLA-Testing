@@ -245,8 +245,34 @@ button:disabled { opacity: 0.28; cursor: not-allowed; }
 
 #btn-playpause {
   padding: 5px 18px;
+  min-width: 88px;
+  justify-content: center;
   color: var(--text-1);
   background: var(--surface-3);
+}
+.btn-icon {
+  font-size: 10px;
+  line-height: 1;
+  display: inline-block;
+  vertical-align: middle;
+}
+.pause-bars {
+  display: inline-flex;
+  align-items: center;
+  gap: 2.5px;
+  width: 9px;
+  height: 10px;
+  vertical-align: middle;
+}
+.pause-bars::before,
+.pause-bars::after {
+  content: '';
+  display: block;
+  width: 2.5px;
+  height: 10px;
+  background: currentColor;
+  border-radius: 1px;
+  flex-shrink: 0;
 }
 #btn-playpause:hover:not(:disabled) {
   border-color: var(--accent);
