@@ -1,229 +1,14 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Episode Labeler</title>
-<style>
-  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-  body { font-family: system-ui, sans-serif; background: #0f0f0f; color: #e0e0e0; height: 100vh; display: flex; flex-direction: column; }
-
-  /* ── Header bar ── */
-  #header {
-    background: #1a1a1a;
-    border-bottom: 1px solid #333;
-    padding: 10px 16px;
-    display: flex;
-    align-items: center;
-    gap: 14px;
-    flex-shrink: 0;
-    flex-wrap: wrap;
-  }
-  #header label { font-size: 13px; color: #aaa; }
-  select, input[type=number], input[type=text], textarea {
-    background: #2a2a2a; color: #e0e0e0; border: 1px solid #444;
-    border-radius: 4px; padding: 4px 8px; font-size: 13px;
-  }
-  select:focus, input:focus, textarea:focus { outline: none; border-color: #4a9eff; }
-  button {
-    background: #2a2a2a; color: #e0e0e0; border: 1px solid #444;
-    border-radius: 4px; padding: 5px 12px; font-size: 13px; cursor: pointer;
-  }
-  button:hover { background: #3a3a3a; border-color: #555; }
-  button:disabled { opacity: 0.4; cursor: default; }
-  button.primary { background: #1a6fd4; border-color: #2a7fe4; }
-  button.primary:hover { background: #2a7fe4; }
-  button.danger { background: #7f1d1d; border-color: #a72828; }
-  button.danger:hover { background: #a72828; }
-
-  #ep-info { margin-left: auto; font-size: 13px; color: #aaa; white-space: nowrap; }
-  #progress-badge {
-    font-size: 12px; padding: 2px 8px; border-radius: 10px;
-    background: #1a3d1a; color: #6ddc6d; border: 1px solid #2a5a2a;
-  }
-
-  /* ── Video grid ── */
-  #video-grid {
-    display: flex;
-    flex: 1;
-    min-height: 0;
-    gap: 4px;
-    padding: 4px;
-    background: #0a0a0a;
-  }
-  .cam-panel {
-    flex: 1;
-    display: flex;
-    flex-direction: column;
-    min-width: 0;
-    position: relative;
-  }
-  .cam-label {
-    font-size: 11px; color: #888; padding: 2px 6px;
-    background: #1a1a1a; border-radius: 4px 4px 0 0; text-align: center;
-  }
-  video {
-    width: 100%; height: 100%; object-fit: contain;
-    background: #000; display: block;
-    flex: 1; min-height: 0;
-  }
-  .video-fallback {
-    position: absolute;
-    inset: 24px 0 0 0;
-    display: none;
-    align-items: center;
-    justify-content: center;
-    text-align: center;
-    padding: 16px;
-    background: rgba(0, 0, 0, 0.78);
-    color: #d8d8d8;
-    font-size: 13px;
-    line-height: 1.4;
-  }
-  .video-fallback.show { display: flex; }
-  .video-fallback a {
-    color: #7eb8ff;
-    text-decoration: underline;
-  }
-  .video-fallback strong {
-    display: block;
-    margin-bottom: 6px;
-    color: #f2f2f2;
-  }
-  .video-progress-wrap {
-    width: min(320px, 80vw);
-    margin: 8px auto 6px;
-    height: 8px;
-    background: #262626;
-    border: 1px solid #3a3a3a;
-    border-radius: 6px;
-    overflow: hidden;
-  }
-  .video-progress-fill {
-    height: 100%;
-    width: 0%;
-    background: linear-gradient(90deg, #3f84d6, #6cb2ff);
-    transition: width 0.2s ease;
-  }
-  .video-progress-text {
-    font-size: 12px;
-    color: #a8c8ff;
-  }
-
-  /* ── Controls bar ── */
-  #controls {
-    background: #1a1a1a;
-    border-top: 1px solid #333;
-    padding: 8px 16px;
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-    flex-shrink: 0;
-  }
-  #seek-row {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-  }
-  #seekbar {
-    flex: 1;
-    height: 4px;
-    accent-color: #4a9eff;
-    cursor: pointer;
-  }
-  #time-display { font-size: 12px; color: #aaa; min-width: 90px; text-align: right; font-variant-numeric: tabular-nums; }
-  #btn-row { display: flex; gap: 8px; align-items: center; }
-
-  /* ── Annotation area ── */
-  #annotation-area {
-    background: #141414;
-    border-top: 1px solid #333;
-    padding: 10px 16px;
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-    flex-shrink: 0;
-  }
-  #annotation-area label { font-size: 12px; color: #aaa; }
-  #task-input {
-    width: 100%; resize: vertical; min-height: 52px;
-    font-size: 14px; padding: 6px 10px; line-height: 1.4;
-  }
-  #submit-row { display: flex; align-items: center; gap: 10px; }
-  #status-msg { font-size: 12px; transition: opacity 0.4s; }
-  #status-msg.ok  { color: #6ddc6d; }
-  #status-msg.err { color: #f06060; }
-  #ep-annotation-status { font-size: 12px; color: #888; }
-
-  /* ── Loading overlay ── */
-  #loading {
-    position: fixed; inset: 0; background: rgba(0,0,0,0.75);
-    display: flex; align-items: center; justify-content: center;
-    font-size: 16px; color: #aaa; z-index: 100;
-  }
-  #loading.hidden { display: none; }
-</style>
-</head>
-<body>
-
-<div id="loading">Loading datasets…</div>
-
-<!-- ── Header ── -->
-<div id="header">
-  <label for="dataset-select">Dataset</label>
-  <select id="dataset-select"></select>
-
-  <span id="progress-badge">0 / 0 labeled</span>
-
-  <button id="btn-prev" disabled>&#9664; Prev</button>
-
-  <label for="jump-input">Jump to</label>
-  <input id="jump-input" type="number" min="0" step="1" style="width:70px" placeholder="0">
-  <button id="btn-go">Go</button>
-
-  <button id="btn-next" disabled>Next &#9654;</button>
-
-  <span id="ep-info">Episode — / —</span>
-</div>
-
-<!-- ── Video grid — panels injected dynamically by JS ── -->
-<div id="video-grid"></div>
-
-<!-- ── Transport controls ── -->
-<div id="controls">
-  <div id="seek-row">
-    <input id="seekbar" type="range" min="0" max="1000" value="0" step="1">
-    <span id="time-display">0:00 / 0:00</span>
-  </div>
-  <div id="btn-row">
-    <button id="btn-playpause">&#9654; Play</button>
-    <button id="btn-skip-back">&#8249;&#8249; 5s</button>
-    <button id="btn-skip-fwd">5s &#8250;&#8250;</button>
-  </div>
-</div>
-
-<!-- ── Annotation area ── -->
-<div id="annotation-area">
-  <label for="task-input">Task prompt <span id="ep-annotation-status"></span></label>
-  <textarea id="task-input" placeholder="Describe the action in this episode…"></textarea>
-  <div id="submit-row">
-    <button id="btn-submit" class="primary">Submit Label</button>
-    <button id="btn-delete" class="danger">Delete Episode</button>
-    <span id="status-msg"></span>
-  </div>
-</div>
-
-<script>
 // ── State ──────────────────────────────────────────────────────────────────
-let datasets = [];          // [{name, episode_count, labeled_count}]
-let episodes = [];          // [{index, cameras:{name:{start_s, end_s}}, annotation}]
+let datasets = [];
+let episodes = [];
 let currentDataset = null;
-let currentEpIdx = 0;       // index into episodes[]
+let currentEpIdx = 0;
 let isPlaying = false;
-let seekSuppressed = false; // prevent seekbar feedback loop
+let seekSuppressed = false;
 let videoLoadGeneration = 0;
-let videoStatusPollers = [];  // one entry per active camera panel
-let videos = [];              // video elements, rebuilt by rebuildVideoGrid()
+let videoStatusPollers = [];
+let videos = [];
+let seekRafId = null;
 
 function mediaErrorName(code) {
   if (code === 1) return 'MEDIA_ERR_ABORTED';
@@ -313,7 +98,6 @@ async function prepareAndLoadCamera(cam, i, generation) {
       const progress = Number(status.progress || 0);
       const message = status.message || '';
 
-      // If we already have a decodable frame, never cover it with the fallback UI.
       if (videoEl.readyState >= 2 && (videoEl.currentSrc || videoEl.src)) {
         hideFallback(i);
       }
@@ -348,7 +132,6 @@ async function prepareAndLoadCamera(cam, i, generation) {
 
 // ── Dynamic video grid ─────────────────────────────────────────────────────
 function rebuildVideoGrid(camNames) {
-  // Clear all running pollers from the previous layout.
   videoStatusPollers.forEach((_, i) => clearVideoPoller(i));
   videoStatusPollers = camNames.map(() => null);
 
@@ -392,7 +175,6 @@ function rebuildVideoGrid(camNames) {
     videos.push(video);
   });
 
-  // Primary video drives the seekbar and enforces episode bounds.
   if (videos[0]) {
     videos[0].addEventListener('timeupdate', () => {
       const ep = episodes[currentEpIdx];
@@ -404,7 +186,6 @@ function rebuildVideoGrid(camNames) {
         pauseAll();
         videos[0].currentTime = end;
       }
-      updateSeekbar();
     });
   }
 }
@@ -439,7 +220,6 @@ function primaryEnd() {
   return cams.length ? cams[0].end_s : 0;
 }
 
-// Returns the current playback position within the episode (0 … duration)
 function relativeTime() {
   const v0 = videos[0];
   if (!v0) return 0;
@@ -467,12 +247,12 @@ async function selectDataset(name) {
 
   if (!episodes.length) {
     currentEpIdx = 0;
-    document.getElementById('ep-info').textContent = 'Episode 0 / 0';
+    document.getElementById('ep-info').textContent = '0 / 0';
     document.getElementById('btn-prev').disabled = true;
     document.getElementById('btn-next').disabled = true;
     document.getElementById('btn-delete').disabled = true;
     document.getElementById('task-input').value = '';
-    document.getElementById('ep-annotation-status').textContent = '(unlabeled)';
+    document.getElementById('ep-annotation-status').textContent = '';
     pauseAll();
     updateProgressBadge();
     return;
@@ -494,26 +274,21 @@ function loadEpisode(idx) {
   const ep = episodes[idx];
   const camNames = Object.keys(ep.cameras);
 
-  // Rebuild the grid whenever the camera set changes (new dataset, first load, etc.)
   if (camNames.length !== videos.length ||
       camNames.some((cam, i) => document.getElementById(`label-cam${i}`)?.textContent !== cam)) {
     rebuildVideoGrid(camNames);
   }
 
-  // Kick off video preparation for each camera
   camNames.forEach((cam, i) => {
     hideFallback(i);
     prepareAndLoadCamera(cam, i, generation);
   });
 
-  // Seek to episode start once enough data is available
   videos.forEach((v, i) => {
     const cam = camNames[i];
     if (!cam) return;
     const info = ep.cameras[cam];
-    const seekTo = () => {
-      v.currentTime = info.start_s;
-    };
+    const seekTo = () => { v.currentTime = info.start_s; };
     if (v.readyState >= 1) {
       seekTo();
     } else {
@@ -521,45 +296,57 @@ function loadEpisode(idx) {
     }
   });
 
-  // Update UI
-  const epInfo = document.getElementById('ep-info');
-  epInfo.textContent = `Episode ${idx + 1} / ${episodes.length}`;
+  document.getElementById('ep-info').textContent = `${idx + 1} / ${episodes.length}`;
   document.getElementById('btn-prev').disabled = idx === 0;
   document.getElementById('btn-next').disabled = idx === episodes.length - 1;
   document.getElementById('btn-delete').disabled = false;
   document.getElementById('jump-input').value = idx;
 
-  // Load existing annotation
   const taskInput = document.getElementById('task-input');
   const annoStatus = document.getElementById('ep-annotation-status');
   const statusMsg = document.getElementById('status-msg');
   statusMsg.textContent = '';
+  statusMsg.className = '';
   if (ep.annotation) {
     taskInput.value = ep.annotation;
-    annoStatus.textContent = '(labeled)';
-    annoStatus.style.color = '#6ddc6d';
+    annoStatus.textContent = 'labeled';
+    annoStatus.className = 'anno-status labeled';
+    taskInput.classList.add('has-annotation');
   } else {
     taskInput.value = '';
-    annoStatus.textContent = '(unlabeled)';
-    annoStatus.style.color = '#888';
+    annoStatus.textContent = 'unlabeled';
+    annoStatus.className = 'anno-status';
+    taskInput.classList.remove('has-annotation');
   }
 
-  // Reset playback state
   pauseAll();
   updateSeekbar();
 }
 
 // ── Playback controls ──────────────────────────────────────────────────────
 function playAll() {
+  if (episodes.length) {
+    const ep = episodes[currentEpIdx];
+    const camNames = Object.keys(ep.cameras);
+    const primaryCam = camNames[0];
+    if (primaryCam && videos[0] && videos[0].currentTime >= ep.cameras[primaryCam].end_s - 0.1) {
+      videos.forEach((v, i) => {
+        const cam = camNames[i];
+        if (cam) v.currentTime = ep.cameras[cam].start_s;
+      });
+    }
+  }
   videos.forEach(v => { if (v.src) v.play().catch(() => {}); });
-  document.getElementById('btn-playpause').textContent = '❚❚ Pause';
+  document.getElementById('btn-playpause').innerHTML = '<span class="btn-icon pause-bars"></span> Pause';
   isPlaying = true;
+  startSeekbarAnimation();
 }
 
 function pauseAll() {
   videos.forEach(v => v.pause());
-  document.getElementById('btn-playpause').textContent = '▶ Play';
+  document.getElementById('btn-playpause').innerHTML = '<span class="btn-icon">▶</span> Play';
   isPlaying = false;
+  stopSeekbarAnimation();
 }
 
 function togglePlay() {
@@ -573,8 +360,8 @@ function skipSeconds(delta) {
   const primaryCam = camNames[0];
   if (!primaryCam) return;
   const info = ep.cameras[primaryCam];
-  const newTime = Math.max(info.start_s, Math.min(video0.currentTime + delta, info.end_s));
-  const offset = newTime - video0.currentTime;
+  const newTime = Math.max(info.start_s, Math.min(videos[0].currentTime + delta, info.end_s));
+  const offset = newTime - videos[0].currentTime;
   videos.forEach((v, i) => {
     const cam = camNames[i];
     if (!cam) return;
@@ -600,15 +387,30 @@ function updateSeekbar() {
   const dur = epDuration();
   const rel = relativeTime();
   const seekbar = document.getElementById('seekbar');
-  seekbar.value = dur > 0 ? Math.round((rel / dur) * 1000) : 0;
+  seekbar.value = dur > 0 ? (rel / dur) * 1000 : 0;
   document.getElementById('time-display').textContent = `${fmt(rel)} / ${fmt(dur)}`;
 }
 
+function seekbarRafLoop() {
+  updateSeekbar();
+  seekRafId = requestAnimationFrame(seekbarRafLoop);
+}
+
+function startSeekbarAnimation() {
+  if (!seekRafId) seekRafId = requestAnimationFrame(seekbarRafLoop);
+}
+
+function stopSeekbarAnimation() {
+  if (seekRafId) {
+    cancelAnimationFrame(seekRafId);
+    seekRafId = null;
+  }
+  updateSeekbar();
+}
+
 function updateProgressBadge() {
-  const ds = datasets.find(d => d.name === currentDataset);
-  if (!ds) return;
   const labeled = episodes.filter(e => e.annotation).length;
-  document.getElementById('progress-badge').textContent = `${labeled} / ${episodes.length} labeled`;
+  document.getElementById('progress-badge').textContent = `${labeled} / ${episodes.length}`;
 }
 
 // ── Annotation submit ─────────────────────────────────────────────────────
@@ -616,7 +418,7 @@ async function submitAnnotation() {
   if (!currentDataset || !episodes.length) return;
   const task = document.getElementById('task-input').value.trim();
   if (!task) {
-    showStatus('Please enter a task prompt.', false);
+    showStatus('Please enter a task description.', false);
     return;
   }
   const ep = episodes[currentEpIdx];
@@ -628,10 +430,11 @@ async function submitAnnotation() {
   if (res.ok) {
     ep.annotation = task;
     const annoStatus = document.getElementById('ep-annotation-status');
-    annoStatus.textContent = '(labeled)';
-    annoStatus.style.color = '#6ddc6d';
+    annoStatus.textContent = 'labeled';
+    annoStatus.className = 'anno-status labeled';
+    document.getElementById('task-input').classList.add('has-annotation');
     updateProgressBadge();
-    showStatus('Saved!', true);
+    showStatus('Saved', true);
   } else {
     const body = await res.json().catch(() => ({}));
     showStatus('Error: ' + (body.error || res.statusText), false);
@@ -641,7 +444,7 @@ async function submitAnnotation() {
 async function deleteEpisode() {
   if (!currentDataset || !episodes.length) return;
   const ep = episodes[currentEpIdx];
-  const confirmed = window.confirm(`Delete episode ${ep.index} marker from cleaned dataset only?`);
+  const confirmed = window.confirm(`Delete episode ${ep.index} from the cleaned dataset?`);
   if (!confirmed) return;
 
   const previousIdx = currentEpIdx;
@@ -658,9 +461,9 @@ async function deleteEpisode() {
   await selectDataset(currentDataset);
   if (episodes.length) {
     loadEpisode(Math.min(Math.max(0, previousIdx - 1), episodes.length - 1));
-    showStatus('Episode marker deleted from cleaned dataset.', true);
+    showStatus('Episode deleted', true);
   } else {
-    showStatus('Episode marker deleted. No episodes remaining.', true);
+    showStatus('No episodes remaining', true);
   }
 }
 
@@ -668,8 +471,10 @@ function showStatus(msg, ok) {
   const el = document.getElementById('status-msg');
   el.textContent = msg;
   el.className = ok ? 'ok' : 'err';
-  el.style.opacity = '1';
-  setTimeout(() => { el.style.opacity = '0'; }, 3000);
+  setTimeout(() => {
+    el.style.opacity = '0';
+    setTimeout(() => { el.className = ''; el.textContent = ''; el.style.opacity = ''; }, 400);
+  }, 2800);
 }
 
 // ── Event wiring ──────────────────────────────────────────────────────────
@@ -691,7 +496,6 @@ document.getElementById('btn-skip-fwd').addEventListener('click', () => skipSeco
 document.getElementById('btn-submit').addEventListener('click', submitAnnotation);
 document.getElementById('btn-delete').addEventListener('click', deleteEpisode);
 
-// Keyboard shortcuts
 document.addEventListener('keydown', e => {
   if (e.target.tagName === 'TEXTAREA' || e.target.tagName === 'INPUT') return;
   if (e.code === 'Space') { e.preventDefault(); togglePlay(); }
@@ -701,7 +505,6 @@ document.addEventListener('keydown', e => {
   if (e.code === 'ArrowDown') loadEpisode(currentEpIdx + 1);
 });
 
-// Seekbar interaction
 const seekbar = document.getElementById('seekbar');
 seekbar.addEventListener('mousedown', () => { seekSuppressed = true; });
 seekbar.addEventListener('input', () => {
@@ -712,10 +515,5 @@ seekbar.addEventListener('input', () => {
 seekbar.addEventListener('mouseup', () => { seekSuppressed = false; });
 seekbar.addEventListener('touchend', () => { seekSuppressed = false; });
 
-// timeupdate listener is attached inside rebuildVideoGrid() on videos[0].
-
 // ── Boot ──────────────────────────────────────────────────────────────────
 loadDatasets();
-</script>
-</body>
-</html>

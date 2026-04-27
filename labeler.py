@@ -47,7 +47,12 @@ from dataset_utils import (
 CLEANED_DATASETS_ROOT = Path("cleaned_datasets")
 RAW_DATASETS_ROOT = Path("raw_datasets")
 
-app = Flask(__name__)
+app = Flask(
+    __name__,
+    template_folder="frontend/templates",
+    static_folder="frontend",
+    static_url_path="/static",
+)
 
 _TRANSCODE_LOCKS: dict[Path, threading.Lock] = {}
 _TRANSCODE_LOCKS_GUARD = threading.Lock()

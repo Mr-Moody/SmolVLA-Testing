@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Labeler</title>
+  <link rel="stylesheet" href="/static/css/labeler.css">
+</head>
+<body>
+
+<div id="loading">
+  <div class="loader-ring"></div>
+  <span>loading</span>
+</div>
+
+<div id="app">
+
+  <header id="header">
+    <span class="hd-brand">Labeler</span>
+    <div class="hd-sep"></div>
+    <select id="dataset-select"></select>
+    <span id="progress-badge">0 / 0</span>
+    <div class="hd-sep"></div>
+    <div class="hd-nav">
+      <button id="btn-prev" disabled>&#8249;</button>
+      <span id="ep-info">— / —</span>
+      <button id="btn-next" disabled>&#8250;</button>
+    </div>
+    <div class="hd-spacer"></div>
+    <div class="hd-jump">
+      <input id="jump-input" type="number" min="0" step="1" placeholder="—">
+      <button id="btn-go">go</button>
+    </div>
+  </header>
+
+  <main id="video-grid"></main>
+
+  <div id="transport">
+    <div id="seek-row">
+      <span id="time-display">0:00 / 0:00</span>
+      <div class="seekbar-wrap">
+        <input id="seekbar" type="range" min="0" max="1000" value="0" step="1">
+      </div>
+    </div>
+    <div id="btn-row">
+      <button id="btn-skip-back">&#8249; 5s</button>
+      <button id="btn-playpause"><span class="btn-icon">&#9654;</span>&nbsp;Play</button>
+      <button id="btn-skip-fwd">5s &#8250;</button>
+    </div>
+  </div>
+
+  <div id="annotation-area">
+    <div class="anno-meta">
+      <span class="anno-label">task</span>
+      <span id="ep-annotation-status" class="anno-status"></span>
+    </div>
+    <textarea id="task-input" placeholder="Describe the manipulation task performed in this episode…" rows="2"></textarea>
+    <div id="submit-row">
+      <button id="btn-submit" class="btn-primary">Save label</button>
+      <button id="btn-delete" class="btn-danger">Delete episode</button>
+      <span id="status-msg"></span>
+    </div>
+  </div>
+
+</div>
+
+<script src="/static/js/labeler.js"></script>
+</body>
+</html>
