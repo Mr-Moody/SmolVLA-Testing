@@ -235,3 +235,4 @@ checkpoints/
 .claude
 .vscode/
 trailbreaker_commands_private.md
+scripts/00_run_params.local.sh

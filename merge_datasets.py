@@ -35,8 +35,7 @@ import pyarrow.parquet as pq
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
 LOGGER = logging.getLogger(__name__)
 
-# Experimental simplification: collapse all tasks into one language instruction.
-SINGLE_TASK_TEXT = "Picking up a soup can and placing it on a cardboard surface"
+UNKNOWN_TASK_TEMPLATE = "unknown task ({dataset}:{index})"
 
 
 # ---------------------------------------------------------------------------
@@ -299,11 +298,19 @@ def merge(source_roots: list[Path], output_root: Path, force: bool) -> Path:
     LOGGER.info("Video keys: %s", video_keys)
 
     # -------------------------------------------------------------------------
-    # Task registry (collapsed to a single task for all rows)
+    # Task registry (preserve per-episode task diversity across sources)
     # -------------------------------------------------------------------------
-    global_task_to_idx: dict[str, int] = {SINGLE_TASK_TEXT: 0}
-    local_task_remaps: list[dict[int, int]] = [{} for _ in source_roots]
-    LOGGER.info("Global task registry: %d task(s) [single-task mode]", len(global_task_to_idx))
+    global_task_to_idx: dict[str, int] = {}
+    local_task_remaps: list[dict[int, int]] = []
+    for source_root in source_roots:
+        local_tasks = read_tasks(source_root)
+        remap: dict[int, int] = {}
+        for local_idx, task_text in sorted(local_tasks.items()):
+            if task_text not in global_task_to_idx:
+                global_task_to_idx[task_text] = len(global_task_to_idx)
+            remap[local_idx] = global_task_to_idx[task_text]
+        local_task_remaps.append(remap)
+    LOGGER.info("Global task registry initialized with %d task(s)", len(global_task_to_idx))
 
     # -------------------------------------------------------------------------
     # Process each source
@@ -325,9 +332,36 @@ def merge(source_roots: list[Path], output_root: Path, force: bool) -> Path:
         # --- Data parquet (one multi-episode file per chunk) ---
         data_table = read_all_parquets(source_root / "data")
         if data_table is not None:
+            task_idx_col = data_table.schema.get_field_index("task_index")
+            if task_idx_col >= 0:
+                task_values = data_table.column("task_index").to_pylist()
+                local_task_indices = sorted({int(v) for v in task_values if v is not None})
+
+                # Some datasets may reference task indices that are absent from
+                # tasks.parquet; keep them distinct instead of collapsing.
+                for local_idx in local_task_indices:
+                    if local_idx not in task_remap:
+                        synthetic_task = UNKNOWN_TASK_TEMPLATE.format(
+                            dataset=source_root.name,
+                            index=local_idx,
+                        )
+                        if synthetic_task not in global_task_to_idx:
+                            global_task_to_idx[synthetic_task] = len(global_task_to_idx)
+                        task_remap[local_idx] = global_task_to_idx[synthetic_task]
+
+                if any(v is None for v in task_values):
+                    null_task = UNKNOWN_TASK_TEMPLATE.format(
+                        dataset=source_root.name,
+                        index="null",
+                    )
+                    if null_task not in global_task_to_idx:
+                        global_task_to_idx[null_task] = len(global_task_to_idx)
+                    data_table = replace_null_int64_with_value(data_table, "task_index", -1)
+                    task_remap[-1] = global_task_to_idx[null_task]
+
             data_table = update_int64_col(data_table, "episode_index", global_ep_offset)
             data_table = update_int64_col(data_table, "index", global_frame_offset)
-            data_table = set_int64_col_constant(data_table, "task_index", 0)
+            data_table = remap_int64_col(data_table, "task_index", task_remap, strict=True)
             all_data_tables.append(data_table)
 
         # Build robust video file-index remaps for this source dataset.
