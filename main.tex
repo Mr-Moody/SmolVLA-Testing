@@ -1,0 +1,141 @@
+\documentclass[11pt, a4paper]{article}
+
+\usepackage[utf8]{inputenc}
+\usepackage[margin=1in]{geometry}
+\usepackage{hyperref}
+\usepackage{xcolor}
+\usepackage{listings}
+\usepackage{tcolorbox}
+
+% Code block styling
+\definecolor{codegray}{rgb}{0.95,0.95,0.95}
+\definecolor{codeblue}{rgb}{0.1,0.2,0.8}
+\definecolor{codegreen}{rgb}{0.1,0.6,0.1}
+
+\lstset{
+    backgroundcolor=\color{codegray},
+    basicstyle=\ttfamily\small,
+    breaklines=true,
+    keywordstyle=\color{codeblue}\bfseries,
+    commentstyle=\color{codegreen}\itshape,
+    numbers=none,
+    frame=single,
+    rulecolor=\color{black!20},
+    aboveskip=1em,
+    belowskip=1em
+}
+
+\title{\textbf{A Quick-Start Guide to Training AlphaZero on UCL Remote GPUs}}
+\author{Edwin Redhead}
+\date{\today}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+This guide outlines the standard operating procedure for running the \texttt{gomoku\_zero} training suite on the UCL TSG Remote GPU Workstations. It covers how to safely bypass the strict 10GB disk quota, execute multi-day runs, and retrieve checkpoints safely.
+\end{abstract}
+
+\tableofcontents
+\vspace{1em}
+\hrule
+\vspace{2em}
+
+\section{The Core Concept: Persistent Storage vs. Scratch Space}
+
+When you log into a managed UCL machine, your home directory (\texttt{\char`\~/}) is mounted via a network drive with a strict \textbf{10GB quota}. Machine learning libraries like PyTorch are massive. If you attempt to run \texttt{pip install torch} in your home directory, your quota will instantly max out and the installation will crash.
+
+\textbf{The Solution:} Every GPU workstation provides a dedicated, high-capacity local disk at \texttt{/scratch0/\$USER/}. However, this scratch space is \textbf{wiped entirely} when your booked session ends. 
+
+Our provided shell scripts automate the following split workflow to keep your data safe:
+\begin{itemize}
+    \item \textbf{Code \& Checkpoints:} Run the code from your \textbf{persistent home directory} (\texttt{\char`\~/}) so models are saved permanently.
+    \item \textbf{Environment:} Build the Python Virtual Environment and install PyTorch in the \textbf{scratch space} (\texttt{/scratch0/\$USER/}).
+\end{itemize}
+
+\section{Step 1: Transferring the Repository via Rsync}
+
+Assuming you have pulled the latest version of the repository to your local machine, you must transfer it to your UCL home directory via the SSH gateway. 
+
+\begin{tcolorbox}[colback=red!5!white,colframe=red!75!black,title=WARNING: Rsync Clutter]
+Do \textbf{not} run \texttt{rsync} directly into your root \texttt{\char`\~/} folder without creating a dedicated project folder first. Doing so can accidentally clone your entire Mac/local profile into your UCL environment, consuming gigabytes of quota!
+\end{tcolorbox}
+
+Open a terminal on your local machine and run:
+
+\begin{lstlisting}[language=bash]
+# Replace 'username' with your UCL CS username
+rsync -avz /path/to/local/rl_coursework/ username@knuckles.cs.ucl.ac.uk:~/rl_coursework/
+\end{lstlisting}
+
+\section{Step 2: Building the Environment on the GPU Node}
+
+Once your booking starts, connect to your reserved GPU machine via SSH (or Apache Guacamole) and navigate to the suite:
+
+\begin{lstlisting}[language=bash]
+cd ~/rl_coursework/gomoku_zero/
+\end{lstlisting}
+
+Run the included setup script. This script automatically provisions a Python virtual environment inside the \texttt{/scratch0/} disk and installs PyTorch locally, completely bypassing your 10GB quota.
+
+\begin{lstlisting}[language=bash]
+bash setup_gpu.sh
+\end{lstlisting}
+
+\section{Step 3: Launching the 44-Hour Training Job}
+
+Once the setup script finishes, you must activate the newly created environment before launching the training suite.
+
+\begin{lstlisting}[language=bash]
+# Activate the scratch environment (use activate.csh if using a C-shell)
+source /scratch0/$USER/gomoku_env/bin/activate
+
+# Launch the training script
+bash run_training_44h.sh
+\end{lstlisting}
+
+The \texttt{run\_training\_44h.sh} script is pre-configured to use \texttt{nohup}. This means the training process will instantly detach and run in the background. You can monitor its live output by reading the log file:
+
+\begin{lstlisting}[language=bash]
+tail -f train_44h.log
+\end{lstlisting}
+\textit{(Press \texttt{Ctrl + C} to exit the log viewer without stopping the training.)}
+
+\section{Step 4: Safely Disconnecting}
+
+Because the script is running in the background, you can safely close your laptop and leave it unattended for the full multi-day run.
+
+\begin{tcolorbox}[colback=yellow!10!white,colframe=orange!80!black,title=CRITICAL: Do Not Click "Log Out"]
+If you are connected via the \textbf{Apache Guacamole} web interface running the Rocky Linux graphical desktop, \textbf{DO NOT} click the "Log Out" button in the system menus. Doing so will force-kill all of your background \texttt{nohup} processes. 
+
+Instead, simply \textbf{close your browser tab} or close your SSH terminal window. 
+\end{tcolorbox}
+
+\section{Step 5: Retrieving Checkpoints}
+
+You can check on the AI's progress periodically by pulling the latest \texttt{.pth} checkpoints back to your local machine. Because the checkpoints save to your persistent home directory, you can retrieve them anytime via the gateway.
+
+Run this in a \textbf{new terminal on your local machine}:
+
+\begin{lstlisting}[language=bash]
+rsync -avP username@knuckles.cs.ucl.ac.uk:~/rl_coursework/gomoku_zero/checkpoints/ \
+    /path/to/local/rl_coursework/gomoku_zero/checkpoints/
+\end{lstlisting}
+
+\section{Step 6: Resuming an Expired Run}
+
+UCL GPU bookings have a maximum duration of 72 hours. To resume a run that was cut off by an expiring booking:
+\begin{enumerate}
+    \item Book a new GPU slot and connect.
+    \item Run \texttt{bash setup\_gpu.sh} again (the previous scratch space was wiped).
+    \item Activate the environment.
+    \item Launch training manually using the resume flag pointing to your latest checkpoint:
+\end{enumerate}
+
+\begin{lstlisting}[language=bash]
+nohup python3 train.py --iterations 150 --games 40 --sims 1000 --epochs 15 \
+    --batch-size 256 --gpu --resume checkpoints/checkpoint_iterX.pth > train_resume.log 2>&1 &
+\end{lstlisting}
+
+\end{document}
