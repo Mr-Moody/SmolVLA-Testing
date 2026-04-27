@@ -908,7 +908,10 @@ document.addEventListener('keydown', e => {
     saveAll();
     return;
   }
-  if (e.target.tagName === 'TEXTAREA' || e.target.tagName === 'INPUT') return;
+  // Block shortcuts when typing in text fields, but allow them when a range
+  // input (seekbar) is focused — just prevent the default slider nudge.
+  if (e.target.tagName === 'TEXTAREA') return;
+  if (e.target.tagName === 'INPUT' && e.target.type !== 'range') return;
   if (e.code === 'Space') { e.preventDefault(); togglePlay(); }
   if (e.code === 'ArrowLeft' || e.code === 'ArrowRight') {
     e.preventDefault();
