@@ -204,7 +204,14 @@ select option {
   min-height: 46px;
 }
 #task-input::placeholder { color: var(--text-3); }
-#task-input:focus { border-color: var(--accent); }
+#task-input.has-annotation {
+  border-color: var(--green);
+  box-shadow: 0 0 0 2px rgba(52, 211, 153, 0.08), 0 0 12px rgba(52, 211, 153, 0.06);
+}
+#task-input:focus {
+  border-color: var(--accent);
+  box-shadow: none;
+}
 
 
 /* ── Buttons ─────────────────────────────────────────────────────────────── */

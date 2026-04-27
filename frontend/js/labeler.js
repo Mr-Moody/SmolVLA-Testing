@@ -311,10 +311,12 @@ function loadEpisode(idx) {
     taskInput.value = ep.annotation;
     annoStatus.textContent = 'labeled';
     annoStatus.className = 'anno-status labeled';
+    taskInput.classList.add('has-annotation');
   } else {
     taskInput.value = '';
     annoStatus.textContent = 'unlabeled';
     annoStatus.className = 'anno-status';
+    taskInput.classList.remove('has-annotation');
   }
 
   pauseAll();
@@ -430,6 +432,7 @@ async function submitAnnotation() {
     const annoStatus = document.getElementById('ep-annotation-status');
     annoStatus.textContent = 'labeled';
     annoStatus.className = 'anno-status labeled';
+    document.getElementById('task-input').classList.add('has-annotation');
     updateProgressBadge();
     showStatus('Saved', true);
   } else {
