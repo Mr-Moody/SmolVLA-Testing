@@ -1,10 +1,11 @@
 // ── Constants ─────────────────────────────────────────────────────────────
 const SUBTASK_PHASES = [
-  { id: 'reach',     label: 'Move to Object',   color: 'rgba(99,102,241,0.82)'  },
-  { id: 'grasp',     label: 'Pick Up',           color: 'rgba(168,85,247,0.82)'  },
-  { id: 'transport', label: 'Move to Target',    color: 'rgba(6,182,212,0.82)'   },
-  { id: 'release',   label: 'Place',             color: 'rgba(52,211,153,0.82)'  },
-  { id: 'retract',   label: 'Move Away',         color: 'rgba(245,158,11,0.82)'  },
+  { id: 'approach_can',  label: 'Approach Can',   color: 'rgba(99,102,241,0.82)'  },
+  { id: 'grasp_can',     label: 'Grasp Can',      color: 'rgba(168,85,247,0.82)'  },
+  { id: 'lift_can',      label: 'Lift Can',       color: 'rgba(236,72,153,0.82)'  },
+  { id: 'move_to_tray',  label: 'Move to Tray',   color: 'rgba(6,182,212,0.82)'   },
+  { id: 'release_can',   label: 'Release Can',    color: 'rgba(52,211,153,0.82)'  },
+  { id: 'retract_arm',   label: 'Retract Arm',    color: 'rgba(245,158,11,0.82)'  },
 ];
 
 // ── State ──────────────────────────────────────────────────────────────────
@@ -368,7 +369,7 @@ function buildSubtaskTimeline() {
     timeline.appendChild(seg);
   });
 
-  for (let i = 0; i < 4; i++) {
+  for (let i = 0; i < SUBTASK_PHASES.length - 1; i++) {
     const handle = document.createElement('div');
     handle.className = 'subtask-boundary';
     handle.id = `subtask-boundary-${i}`;
@@ -383,7 +384,7 @@ function buildSubtaskTimeline() {
   playhead.id = 'subtask-playhead';
   timeline.appendChild(playhead);
 
-  for (let i = 0; i < 4; i++) {
+  for (let i = 0; i < SUBTASK_PHASES.length - 1; i++) {
     const label = document.createElement('span');
     label.className = 'subtask-time-label';
     label.id = `subtask-time-${i}`;
@@ -406,20 +407,13 @@ function initializeSubtaskState() {
   const trimEnd = currentTrimEnd();
   const trimDur = trimEnd - trimStart;
 
-  if (ep.subtasks && ep.subtasks.length === 5) {
-    subtaskState.boundaries = [
-      ep.subtasks[0].end_s,
-      ep.subtasks[1].end_s,
-      ep.subtasks[2].end_s,
-      ep.subtasks[3].end_s,
-    ];
+  const nBounds = SUBTASK_PHASES.length - 1;
+  if (ep.subtasks && ep.subtasks.length === SUBTASK_PHASES.length) {
+    subtaskState.boundaries = ep.subtasks.slice(0, nBounds).map(s => s.end_s);
   } else {
-    subtaskState.boundaries = [
-      trimStart + trimDur * 0.2,
-      trimStart + trimDur * 0.4,
-      trimStart + trimDur * 0.6,
-      trimStart + trimDur * 0.8,
-    ];
+    subtaskState.boundaries = Array.from({ length: nBounds }, (_, i) =>
+      trimStart + trimDur * ((i + 1) / SUBTASK_PHASES.length)
+    );
   }
   updateSubtaskUi();
 }
@@ -484,7 +478,7 @@ function updateSubtaskUi() {
     seg.style.width = `${Math.max(0, rightPct - leftPct)}%`;
   });
 
-  for (let i = 0; i < 4; i++) {
+  for (let i = 0; i < SUBTASK_PHASES.length - 1; i++) {
     const handle = document.getElementById(`subtask-boundary-${i}`);
     if (handle) {
       const pct = ((subtaskState.boundaries[i] - trimStart) / trimDur) * 100;
