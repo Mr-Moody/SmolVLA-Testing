@@ -323,6 +323,17 @@ function loadEpisode(idx) {
 
 // ── Playback controls ──────────────────────────────────────────────────────
 function playAll() {
+  if (episodes.length) {
+    const ep = episodes[currentEpIdx];
+    const camNames = Object.keys(ep.cameras);
+    const primaryCam = camNames[0];
+    if (primaryCam && videos[0] && videos[0].currentTime >= ep.cameras[primaryCam].end_s - 0.1) {
+      videos.forEach((v, i) => {
+        const cam = camNames[i];
+        if (cam) v.currentTime = ep.cameras[cam].start_s;
+      });
+    }
+  }
   videos.forEach(v => { if (v.src) v.play().catch(() => {}); });
   document.getElementById('btn-playpause').textContent = '❚❚ Pause';
   isPlaying = true;
