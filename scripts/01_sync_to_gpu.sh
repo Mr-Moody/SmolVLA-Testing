@@ -17,7 +17,7 @@ echo "Remote home detected as: ${REMOTE_HOME_DIR}"
 
 # Ensure destination directories exist.
 ssh -J "${SSH_JUMP}" "${SSH_REMOTE}" \
-  "mkdir -p '${REMOTE_CODE_DIR}' '${REMOTE_SCRATCH_BASE}/lerobot_datasets'"
+  "mkdir -p '${REMOTE_CODE_DIR}' '${REMOTE_SCRATCH_BASE}/lerobot_datasets' '${REMOTE_CLEANED_DATASET_ROOT}'"
 
 # Code to persistent home (lightweight only).
 rsync -avz --progress \
@@ -30,10 +30,18 @@ rsync -avz --progress \
   "${LOCAL_PROJECT_ROOT}/" \
   "${SSH_REMOTE}:${REMOTE_CODE_DIR}/"
 
-# Converted training data to scratch.
-rsync -avzP \
-  -e "ssh -J ${SSH_JUMP}" \
-  "${LOCAL_DATA_PULL_SOURCE}/" \
-  "${SSH_REMOTE}:${REMOTE_SCRATCH_BASE}/lerobot_datasets/"
+if [[ "${PREPROCESS_ON_GPU}" == "true" ]]; then
+  echo "GPU preprocessing enabled: syncing cleaned datasets to scratch..."
+  rsync -avzP \
+    -e "ssh -J ${SSH_JUMP}" \
+    "${LOCAL_CLEANED_DATA_SOURCE}/" \
+    "${SSH_REMOTE}:${REMOTE_CLEANED_DATASET_ROOT}/"
+else
+  echo "GPU preprocessing disabled: syncing converted datasets to scratch..."
+  rsync -avzP \
+    -e "ssh -J ${SSH_JUMP}" \
+    "${LOCAL_DATA_PULL_SOURCE}/" \
+    "${SSH_REMOTE}:${REMOTE_SCRATCH_BASE}/lerobot_datasets/"
+fi
 
 echo "Sync complete."

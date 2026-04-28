@@ -44,6 +44,25 @@ def ensure_lerobot_importable(lerobot_root: Path) -> None:
         sys.path.insert(0, str(lerobot_src))
 
 
+def disable_lerobot_hub_lookups() -> None:
+    """Force lerobot to stay on the local dataset path when offline mode is requested."""
+    if os.getenv("HF_HUB_OFFLINE") != "1":
+        return
+
+    import lerobot.datasets.lerobot_dataset as lerobot_dataset
+    import lerobot.datasets.utils as dataset_utils
+
+    def _local_safe_version(_repo_id: str, version: str) -> str:
+        normalized = str(version)
+        if normalized.startswith("v"):
+            normalized = normalized[1:]
+        return f"v{normalized}"
+
+    lerobot_dataset.get_safe_version = _local_safe_version
+    dataset_utils.get_safe_version = _local_safe_version
+    dataset_utils.check_version_compatibility = lambda *args, **kwargs: None
+
+
 def resolve_lerobot_root(explicit_root: Path | None) -> Path:
     script_dir = Path(__file__).resolve().parent
     search_candidates: list[Path] = []
@@ -119,6 +138,7 @@ def train_smolvla(
     policy_repo_id: str | None,
 ) -> Path:
     ensure_lerobot_importable(lerobot_root)
+    disable_lerobot_hub_lookups()
 
     from lerobot.configs.default import DatasetConfig
     from lerobot.configs.train import TrainPipelineConfig
