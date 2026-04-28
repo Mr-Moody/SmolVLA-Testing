@@ -584,7 +584,7 @@ function loadEpisode(idx) {
   document.getElementById('btn-prev').disabled = idx === 0;
   document.getElementById('btn-next').disabled = idx === episodes.length - 1;
   document.getElementById('btn-delete').disabled = false;
-  document.getElementById('jump-input').value = idx;
+  document.getElementById('jump-input').value = idx + 1;
 
   const taskInput = document.getElementById('task-input');
   const annoStatus = document.getElementById('ep-annotation-status');
@@ -864,7 +864,7 @@ document.getElementById('btn-prev').addEventListener('click', () => loadEpisode(
 document.getElementById('btn-next').addEventListener('click', () => loadEpisode(currentEpIdx + 1));
 document.getElementById('btn-go').addEventListener('click', () => {
   const v = parseInt(document.getElementById('jump-input').value, 10);
-  if (!isNaN(v)) loadEpisode(v);
+  if (!isNaN(v)) loadEpisode(v - 1);
 });
 document.getElementById('jump-input').addEventListener('keydown', e => {
   if (e.key === 'Enter') document.getElementById('btn-go').click();
