@@ -28,6 +28,15 @@ SmolVLA-Testing/
 
 Most commands below are run from `SmolVLA-Testing/`.
 
+## Installation
+
+Install the `lerobot` package with the SmolVLA extras into its own uv environment from within the `lerobot` sibling directory:
+
+```bash
+cd ../lerobot
+uv pip install -e ".[smolvla]"
+```
+
 ## Environment Notes
 
 `SmolVLA-Testing` does not have its own `pyproject.toml`, so run Python commands against the `lerobot` project environment:
@@ -54,7 +63,7 @@ uv run --project ../lerobot python main.py --dataset-root lerobot_datasets/<data
 Example end-to-end for a dataset called `example` with an `ee_zed_m` primary camera:
 
 ```bash
-uv run --project ../lerobot python data_cleaner.py example --force
+uv run --project ../lerobot python data_cleaner.py example --generate-tasks --force
 uv run --project ../lerobot python data_converter.py example --primary-camera ee_zed_m --force
 uv run --project ../lerobot python main.py \
   --dataset-root lerobot_datasets/example \
@@ -89,6 +98,7 @@ Options:
 | `--action-rotation-threshold` | `5e-5` | Min rotation norm considered movement |
 | `--max-episodes` | — | Limit number of episodes processed |
 | `--force` | — | Overwrite existing output directory |
+| `--generate-tasks` | — | Auto-assign a unique global task prompt to each kept episode and write `annotations.jsonl` |
 
 ### 2) Convert Cleaned Dataset to LeRobotDataset v3
 

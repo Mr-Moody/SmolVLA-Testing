@@ -1,63 +1,60 @@
 import random
 import json
 
-def generate_global_prompts(num_episodes=200):
-    # 1. Define our diverse synonym pools based on the visual setup
-    verbs = [
-        "Pick up", "Grab", "Move", "Place", "Transfer", 
-        "Put", "Store", "Fetch", "Relocate"
-    ]
-    
-    target_objects = [
-        "the soup can", "the Campbell's can", "the red and white can", 
-        "the tomato soup", "the soup tin", "the red can"
-    ]
-    
-    prepositions = ["into", "inside", "in", "within"]
-    
-    receptacles = [
-        "the green cardboard tray", "the green box", "the green receptacle", 
-        "the cardboard bin with green edges", "the tray", "the green storage box"
+_VERBS = [
+    "Pick up", "Grab", "Move", "Place", "Transfer",
+    "Put", "Store", "Fetch", "Relocate"
+]
+
+_TARGET_OBJECTS = [
+    "the soup can", "the Campbell's can", "the red and white can",
+    "the tomato soup", "the soup tin", "the red can"
+]
+
+_PREPOSITIONS = ["into", "inside", "in", "within"]
+
+_RECEPTACLES = [
+    "the green cardboard tray", "the green box", "the green receptacle",
+    "the cardboard bin with green edges", "the tray", "the green storage box"
+]
+
+
+def generate_prompts(num_episodes: int) -> list[str]:
+    """Return a reproducible list of ``num_episodes`` unique task prompt strings."""
+    all_prompts = [
+        f"{v} {t} {p} {r}."
+        for v in _VERBS
+        for t in _TARGET_OBJECTS
+        for p in _PREPOSITIONS
+        for r in _RECEPTACLES
     ]
 
-    # 2. Generate all possible combinations
-    all_possible_prompts = []
-    for v in verbs:
-        for t in target_objects:
-            for p in prepositions:
-                for r in receptacles:
-                    prompt = f"{v} {t} {p} {r}."
-                    all_possible_prompts.append(prompt)
-    
-    # 3. Shuffle and sample exactly the number we need
-    random.seed(42) # For reproducibility
-    random.shuffle(all_possible_prompts)
-    
-    if num_episodes > len(all_possible_prompts):
-        raise ValueError("Not enough combinations for unique prompts. Add more synonyms.")
-        
-    selected_prompts = all_possible_prompts[:num_episodes]
-    
-    # 4. Format for LeRobot meta/tasks.jsonl
-    # LeRobot expects a dictionary mapping an integer task_index to the string task
-    tasks_metadata = {}
-    for index, prompt in enumerate(selected_prompts):
-        tasks_metadata[index] = prompt
-        
-    # 5. Export to JSONL
+    if num_episodes > len(all_prompts):
+        raise ValueError(
+            f"Requested {num_episodes} prompts but only {len(all_prompts)} unique "
+            "combinations exist. Add more synonym entries."
+        )
+
+    rng = random.Random(42)
+    rng.shuffle(all_prompts)
+    return all_prompts[:num_episodes]
+
+
+def generate_global_prompts(num_episodes: int = 200) -> None:
+    """Generate prompts and write them to tasks.jsonl (CLI entry point)."""
+    selected = generate_prompts(num_episodes)
+
     output_file = "tasks.jsonl"
-    with open(output_file, 'w') as f:
-        for index, prompt in tasks_metadata.items():
-            json_record = {"task_index": index, "task": prompt}
-            f.write(json.dumps(json_record) + '\n')
-            
+    with open(output_file, "w") as f:
+        for index, prompt in enumerate(selected):
+            f.write(json.dumps({"task_index": index, "task": prompt}) + "\n")
+
     print(f"Successfully generated {num_episodes} unique global prompts.")
     print(f"Saved to {output_file}")
-    
-    # Print a few examples
     print("\nExamples generated:")
-    for i in range(5):
-        print(f" - {selected_prompts[i]}")
+    for prompt in selected[:5]:
+        print(f" - {prompt}")
+
 
 if __name__ == "__main__":
     generate_global_prompts(200)
