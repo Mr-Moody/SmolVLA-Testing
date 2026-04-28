@@ -1,3 +1,13 @@
+// ── Constants ─────────────────────────────────────────────────────────────
+const SUBTASK_PHASES = [
+  { id: 'approach_can',  label: 'Approach Can',   color: 'rgba(99,102,241,0.82)'  },
+  { id: 'grasp_can',     label: 'Grasp Can',      color: 'rgba(168,85,247,0.82)'  },
+  { id: 'lift_can',      label: 'Lift Can',       color: 'rgba(236,72,153,0.82)'  },
+  { id: 'move_to_tray',  label: 'Move to Tray',   color: 'rgba(6,182,212,0.82)'   },
+  { id: 'release_can',   label: 'Release Can',    color: 'rgba(52,211,153,0.82)'  },
+  { id: 'retract_arm',   label: 'Retract Arm',    color: 'rgba(245,158,11,0.82)'  },
+];
+
 // ── State ──────────────────────────────────────────────────────────────────
 let datasets = [];
 let episodes = [];
@@ -9,6 +19,17 @@ let videoLoadGeneration = 0;
 let videoStatusPollers = [];
 let videos = [];
 let seekRafId = null;
+let trimState = {
+  start_s: 0,
+  end_s: 0,
+  dragging: null,
+  dirty: false,
+};
+let subtaskState = {
+  boundaries: [],       // 4 absolute video-time values dividing 5 phases
+  draggingBoundary: null,
+  dirty: false,
+};
 
 function mediaErrorName(code) {
   if (code === 1) return 'MEDIA_ERR_ABORTED';
@@ -181,7 +202,7 @@ function rebuildVideoGrid(camNames) {
       if (!ep) return;
       const primaryCam = Object.keys(ep.cameras)[0];
       if (!primaryCam) return;
-      const end = ep.cameras[primaryCam].end_s;
+      const end = currentTrimEnd();
       if (videos[0].currentTime >= end - 0.05) {
         pauseAll();
         videos[0].currentTime = end;
@@ -206,6 +227,28 @@ function epDuration() {
   return cams[0].end_s - cams[0].start_s;
 }
 
+function currentEpisode() {
+  return episodes[currentEpIdx] || null;
+}
+
+function primaryCameraName() {
+  const ep = currentEpisode();
+  if (!ep) return null;
+  return Object.keys(ep.cameras)[0] || null;
+}
+
+function currentTrimStart() {
+  const ep = currentEpisode();
+  if (!ep) return 0;
+  return trimState.start_s ?? ep.trim_start_s ?? primaryStart();
+}
+
+function currentTrimEnd() {
+  const ep = currentEpisode();
+  if (!ep) return 0;
+  return trimState.end_s ?? ep.trim_end_s ?? primaryEnd();
+}
+
 function primaryStart() {
   if (!episodes.length) return 0;
   const ep = episodes[currentEpIdx];
@@ -224,6 +267,238 @@ function relativeTime() {
   const v0 = videos[0];
   if (!v0) return 0;
   return Math.max(0, v0.currentTime - primaryStart());
+}
+
+function clampTrimValue(value) {
+  return Math.max(primaryStart(), Math.min(value, primaryEnd()));
+}
+
+function snapTrimValue(value) {
+  const v0 = videos[0];
+  if (!v0) return value;
+  const SNAP_THRESHOLD_S = 0.15;
+  return Math.abs(v0.currentTime - value) <= SNAP_THRESHOLD_S ? v0.currentTime : value;
+}
+
+function updateTrimDirtyState() {
+  const ep = currentEpisode();
+  if (!ep) {
+    trimState.dirty = false;
+    return;
+  }
+  const originalStart = ep.trim_start_s ?? primaryStart();
+  const originalEnd = ep.trim_end_s ?? primaryEnd();
+  trimState.dirty =
+    Math.abs(trimState.start_s - originalStart) > 0.001 ||
+    Math.abs(trimState.end_s - originalEnd) > 0.001;
+}
+
+function updateTrimUi() {
+  const timeline = document.getElementById('trim-timeline');
+  const region = document.getElementById('trim-region');
+  const handleStart = document.getElementById('trim-handle-start');
+  const handleEnd = document.getElementById('trim-handle-end');
+  const playhead = document.getElementById('trim-playhead');
+  const display = document.getElementById('trim-display');
+  const saveBtn = document.getElementById('btn-save-trim');
+  const dur = epDuration();
+
+  if (!timeline || !region || !handleStart || !handleEnd || !playhead || !display || !saveBtn || dur <= 0) {
+    return;
+  }
+
+  const startPct = ((currentTrimStart() - primaryStart()) / dur) * 100;
+  const endPct = ((currentTrimEnd() - primaryStart()) / dur) * 100;
+  const playheadPct = (relativeTime() / dur) * 100;
+
+  region.style.left = `${startPct}%`;
+  region.style.width = `${Math.max(0, endPct - startPct)}%`;
+  handleStart.style.left = `${startPct}%`;
+  handleEnd.style.left = `${endPct}%`;
+  playhead.style.left = `${Math.max(0, Math.min(100, playheadPct))}%`;
+  display.textContent = `${fmt(currentTrimStart() - primaryStart())} - ${fmt(currentTrimEnd() - primaryStart())}`;
+  saveBtn.disabled = !trimState.dirty;
+}
+
+function initializeTrimState() {
+  trimState.start_s = currentEpisode()?.trim_start_s ?? primaryStart();
+  trimState.end_s = currentEpisode()?.trim_end_s ?? primaryEnd();
+  trimState.dragging = null;
+  trimState.dirty = false;
+  updateTrimUi();
+}
+
+function setTrimBoundary(handle, nextValue) {
+  const MIN_TRIM_GAP_S = 0.1;
+  if (handle === 'start') {
+    trimState.start_s = Math.min(snapTrimValue(clampTrimValue(nextValue)), trimState.end_s - MIN_TRIM_GAP_S);
+  } else {
+    trimState.end_s = Math.max(snapTrimValue(clampTrimValue(nextValue)), trimState.start_s + MIN_TRIM_GAP_S);
+  }
+  trimState.start_s = clampTrimValue(trimState.start_s);
+  trimState.end_s = clampTrimValue(trimState.end_s);
+  updateTrimDirtyState();
+  updateTrimUi();
+}
+
+function trimValueFromPointer(clientX) {
+  const timeline = document.getElementById('trim-timeline');
+  const rect = timeline.getBoundingClientRect();
+  const frac = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+  return primaryStart() + frac * epDuration();
+}
+
+// ── Subtask timeline ───────────────────────────────────────────────────────
+function buildSubtaskTimeline() {
+  const timeline = document.getElementById('subtask-timeline');
+  const labelsEl = document.getElementById('subtask-time-labels');
+  if (!timeline || !labelsEl) return;
+
+  timeline.innerHTML = '';
+  labelsEl.innerHTML = '';
+
+  SUBTASK_PHASES.forEach((phase, i) => {
+    const seg = document.createElement('div');
+    seg.className = 'subtask-segment';
+    seg.id = `subtask-seg-${i}`;
+    seg.style.background = phase.color;
+    const label = document.createElement('span');
+    label.className = 'subtask-segment-label';
+    label.textContent = phase.label;
+    seg.appendChild(label);
+    timeline.appendChild(seg);
+  });
+
+  for (let i = 0; i < SUBTASK_PHASES.length - 1; i++) {
+    const handle = document.createElement('div');
+    handle.className = 'subtask-boundary';
+    handle.id = `subtask-boundary-${i}`;
+    const line = document.createElement('div');
+    line.className = 'subtask-boundary-line';
+    handle.appendChild(line);
+    handle.addEventListener('mousedown', e => beginSubtaskDrag(i, e));
+    timeline.appendChild(handle);
+  }
+
+  const playhead = document.createElement('div');
+  playhead.id = 'subtask-playhead';
+  timeline.appendChild(playhead);
+
+  for (let i = 0; i < SUBTASK_PHASES.length - 1; i++) {
+    const label = document.createElement('span');
+    label.className = 'subtask-time-label';
+    label.id = `subtask-time-${i}`;
+    labelsEl.appendChild(label);
+  }
+}
+
+function initializeSubtaskState() {
+  const ep = currentEpisode();
+  subtaskState.draggingBoundary = null;
+  subtaskState.dirty = false;
+
+  if (!ep) {
+    subtaskState.boundaries = [];
+    updateSubtaskUi();
+    return;
+  }
+
+  const trimStart = currentTrimStart();
+  const trimEnd = currentTrimEnd();
+  const trimDur = trimEnd - trimStart;
+
+  const nBounds = SUBTASK_PHASES.length - 1;
+  if (ep.subtasks && ep.subtasks.length === SUBTASK_PHASES.length) {
+    subtaskState.boundaries = ep.subtasks.slice(0, nBounds).map(s => s.end_s);
+  } else {
+    subtaskState.boundaries = Array.from({ length: nBounds }, (_, i) =>
+      trimStart + trimDur * ((i + 1) / SUBTASK_PHASES.length)
+    );
+  }
+  updateSubtaskUi();
+}
+
+function subtaskBoundaryFromPointer(clientX) {
+  const timeline = document.getElementById('subtask-timeline');
+  if (!timeline) return currentTrimStart();
+  const rect = timeline.getBoundingClientRect();
+  const frac = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+  return currentTrimStart() + frac * (currentTrimEnd() - currentTrimStart());
+}
+
+function updateSubtaskBoundary(idx, value) {
+  const MIN_GAP = 0.05;
+  const trimStart = currentTrimStart();
+  const trimEnd = currentTrimEnd();
+  const allBounds = [trimStart, ...subtaskState.boundaries, trimEnd];
+  const minVal = allBounds[idx] + MIN_GAP;
+  const maxVal = allBounds[idx + 2] - MIN_GAP;
+  subtaskState.boundaries[idx] = Math.max(minVal, Math.min(value, maxVal));
+  subtaskState.dirty = true;
+  updateSubtaskUi();
+}
+
+function beginSubtaskDrag(idx, event) {
+  if (!episodes.length) return;
+  subtaskState.draggingBoundary = idx;
+  event.preventDefault();
+  document.body.classList.add('subtask-dragging');
+  document.getElementById(`subtask-boundary-${idx}`)?.classList.add('dragging');
+  updateSubtaskBoundary(idx, subtaskBoundaryFromPointer(event.clientX));
+}
+
+function endSubtaskDrag() {
+  if (subtaskState.draggingBoundary === null) return;
+  document.body.classList.remove('subtask-dragging');
+  document.getElementById(`subtask-boundary-${subtaskState.draggingBoundary}`)?.classList.remove('dragging');
+  subtaskState.draggingBoundary = null;
+}
+
+function updateSubtaskUi() {
+  const saveBtn = document.getElementById('btn-save-subtasks');
+  if (!episodes.length || !subtaskState.boundaries.length) {
+    if (saveBtn) saveBtn.disabled = true;
+    return;
+  }
+
+  const trimStart = currentTrimStart();
+  const trimEnd = currentTrimEnd();
+  const trimDur = trimEnd - trimStart;
+  if (trimDur <= 0) return;
+
+  const allBounds = [trimStart, ...subtaskState.boundaries, trimEnd];
+  const start = primaryStart();
+
+  SUBTASK_PHASES.forEach((_, i) => {
+    const seg = document.getElementById(`subtask-seg-${i}`);
+    if (!seg) return;
+    const leftPct = ((allBounds[i] - trimStart) / trimDur) * 100;
+    const rightPct = ((allBounds[i + 1] - trimStart) / trimDur) * 100;
+    seg.style.left = `${leftPct}%`;
+    seg.style.width = `${Math.max(0, rightPct - leftPct)}%`;
+  });
+
+  for (let i = 0; i < SUBTASK_PHASES.length - 1; i++) {
+    const handle = document.getElementById(`subtask-boundary-${i}`);
+    if (handle) {
+      const pct = ((subtaskState.boundaries[i] - trimStart) / trimDur) * 100;
+      handle.style.left = `${pct}%`;
+    }
+    const timeLabel = document.getElementById(`subtask-time-${i}`);
+    if (timeLabel) {
+      const pct = ((subtaskState.boundaries[i] - trimStart) / trimDur) * 100;
+      timeLabel.style.left = `${pct}%`;
+      timeLabel.textContent = fmt(subtaskState.boundaries[i] - start);
+    }
+  }
+
+  const playhead = document.getElementById('subtask-playhead');
+  if (playhead && videos[0]) {
+    const pct = ((videos[0].currentTime - trimStart) / trimDur) * 100;
+    playhead.style.left = `${Math.max(0, Math.min(100, pct))}%`;
+  }
+
+  if (saveBtn) saveBtn.disabled = !subtaskState.dirty;
 }
 
 // ── Dataset loading ─────────────────────────────────────────────────────────
@@ -251,8 +526,13 @@ async function selectDataset(name) {
     document.getElementById('btn-prev').disabled = true;
     document.getElementById('btn-next').disabled = true;
     document.getElementById('btn-delete').disabled = true;
+    document.getElementById('btn-save-trim').disabled = true;
+    document.getElementById('btn-save-subtasks').disabled = true;
     document.getElementById('task-input').value = '';
     document.getElementById('ep-annotation-status').textContent = '';
+    document.getElementById('trim-display').textContent = '—';
+    subtaskState.boundaries = [];
+    subtaskState.dirty = false;
     pauseAll();
     updateProgressBadge();
     return;
@@ -288,7 +568,11 @@ function loadEpisode(idx) {
     const cam = camNames[i];
     if (!cam) return;
     const info = ep.cameras[cam];
-    const seekTo = () => { v.currentTime = info.start_s; };
+    const primaryCam = camNames[0];
+    const trimOffset = (ep.trim_start_s ?? ep.cameras[primaryCam].start_s) - ep.cameras[primaryCam].start_s;
+    const seekTo = () => {
+      v.currentTime = Math.max(info.start_s, Math.min(info.start_s + trimOffset, info.end_s));
+    };
     if (v.readyState >= 1) {
       seekTo();
     } else {
@@ -321,6 +605,8 @@ function loadEpisode(idx) {
 
   pauseAll();
   updateSeekbar();
+  initializeTrimState();
+  initializeSubtaskState();
 }
 
 // ── Playback controls ──────────────────────────────────────────────────────
@@ -329,10 +615,17 @@ function playAll() {
     const ep = episodes[currentEpIdx];
     const camNames = Object.keys(ep.cameras);
     const primaryCam = camNames[0];
-    if (primaryCam && videos[0] && videos[0].currentTime >= ep.cameras[primaryCam].end_s - 0.1) {
+    const trimStart = currentTrimStart();
+    const trimEnd = currentTrimEnd();
+    if (primaryCam && videos[0] && (videos[0].currentTime < trimStart || videos[0].currentTime >= trimEnd - 0.1)) {
       videos.forEach((v, i) => {
         const cam = camNames[i];
-        if (cam) v.currentTime = ep.cameras[cam].start_s;
+        if (!cam) return;
+        const offset = trimStart - ep.cameras[primaryCam].start_s;
+        v.currentTime = Math.max(
+          ep.cameras[cam].start_s,
+          Math.min(ep.cameras[cam].start_s + offset, ep.cameras[cam].end_s),
+        );
       });
     }
   }
@@ -344,13 +637,43 @@ function playAll() {
 
 function pauseAll() {
   videos.forEach(v => v.pause());
-  document.getElementById('btn-playpause').innerHTML = '<span class="btn-icon">▶</span> Play';
+  document.getElementById('btn-playpause').innerHTML = '<span class="btn-icon">&#9654;</span>&nbsp;Play';
   isPlaying = false;
   stopSeekbarAnimation();
 }
 
 function togglePlay() {
   if (isPlaying) pauseAll(); else playAll();
+}
+
+function jumpToStart() {
+  if (!episodes.length) return;
+  const ep = episodes[currentEpIdx];
+  const camNames = Object.keys(ep.cameras);
+  const primaryCam = camNames[0];
+  if (!primaryCam) return;
+  const trimStart = currentTrimStart();
+  const offset = trimStart - ep.cameras[primaryCam].start_s;
+  videos.forEach((v, i) => {
+    const cam = camNames[i];
+    if (!cam) return;
+    v.currentTime = Math.max(ep.cameras[cam].start_s, ep.cameras[cam].start_s + offset);
+  });
+}
+
+function jumpToEnd() {
+  if (!episodes.length) return;
+  const ep = episodes[currentEpIdx];
+  const camNames = Object.keys(ep.cameras);
+  const primaryCam = camNames[0];
+  if (!primaryCam) return;
+  const trimEnd = currentTrimEnd();
+  const offset = trimEnd - ep.cameras[primaryCam].start_s;
+  videos.forEach((v, i) => {
+    const cam = camNames[i];
+    if (!cam) return;
+    v.currentTime = Math.min(ep.cameras[cam].start_s + offset, ep.cameras[cam].end_s);
+  });
 }
 
 function skipSeconds(delta) {
@@ -389,6 +712,8 @@ function updateSeekbar() {
   const seekbar = document.getElementById('seekbar');
   seekbar.value = dur > 0 ? (rel / dur) * 1000 : 0;
   document.getElementById('time-display').textContent = `${fmt(rel)} / ${fmt(dur)}`;
+  updateTrimUi();
+  updateSubtaskUi();
 }
 
 function seekbarRafLoop() {
@@ -414,11 +739,11 @@ function updateProgressBadge() {
 }
 
 // ── Annotation submit ─────────────────────────────────────────────────────
-async function submitAnnotation() {
+async function submitAnnotation(silent = false) {
   if (!currentDataset || !episodes.length) return;
   const task = document.getElementById('task-input').value.trim();
   if (!task) {
-    showStatus('Please enter a task description.', false);
+    if (!silent) showStatus('Please enter a task description.', false);
     return;
   }
   const ep = episodes[currentEpIdx];
@@ -434,10 +759,64 @@ async function submitAnnotation() {
     annoStatus.className = 'anno-status labeled';
     document.getElementById('task-input').classList.add('has-annotation');
     updateProgressBadge();
-    showStatus('Saved', true);
+    if (!silent) showStatus('Saved', true);
   } else {
     const body = await res.json().catch(() => ({}));
-    showStatus('Error: ' + (body.error || res.statusText), false);
+    if (!silent) showStatus('Error: ' + (body.error || res.statusText), false);
+    throw new Error(body.error || res.statusText);
+  }
+}
+
+async function saveTrim(silent = false) {
+  if (!currentDataset || !episodes.length) return;
+  const ep = currentEpisode();
+  const res = await fetch(`/api/datasets/${currentDataset}/episodes/${ep.index}/trim`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      trim_start_s: Number(trimState.start_s.toFixed(4)),
+      trim_end_s: Number(trimState.end_s.toFixed(4)),
+    }),
+  });
+
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    if (!silent) showStatus('Error: ' + (body.error || res.statusText), false);
+    throw new Error(body.error || res.statusText);
+  }
+
+  ep.trim_start_s = trimState.start_s;
+  ep.trim_end_s = trimState.end_s;
+  updateTrimDirtyState();
+  updateTrimUi();
+  if (!silent) showStatus('Trim saved', true);
+}
+
+async function saveSubtasks(silent = false) {
+  if (!currentDataset || !episodes.length) return;
+  const ep = currentEpisode();
+  const trimStart = currentTrimStart();
+  const trimEnd = currentTrimEnd();
+  const allBounds = [trimStart, ...subtaskState.boundaries, trimEnd];
+  const subtasks = SUBTASK_PHASES.map((phase, i) => ({
+    phase: phase.id,
+    start_s: Number(allBounds[i].toFixed(4)),
+    end_s: Number(allBounds[i + 1].toFixed(4)),
+  }));
+  const res = await fetch(`/api/datasets/${currentDataset}/episodes/${ep.index}/subtasks`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ subtasks }),
+  });
+  if (res.ok) {
+    ep.subtasks = subtasks;
+    subtaskState.dirty = false;
+    updateSubtaskUi();
+    if (!silent) showStatus('Subtasks saved', true);
+  } else {
+    const body = await res.json().catch(() => ({}));
+    if (!silent) showStatus('Error: ' + (body.error || res.statusText), false);
+    throw new Error(body.error || res.statusText);
   }
 }
 
@@ -491,18 +870,58 @@ document.getElementById('jump-input').addEventListener('keydown', e => {
   if (e.key === 'Enter') document.getElementById('btn-go').click();
 });
 document.getElementById('btn-playpause').addEventListener('click', togglePlay);
+document.getElementById('btn-jump-start').addEventListener('click', jumpToStart);
+document.getElementById('btn-jump-end').addEventListener('click', jumpToEnd);
 document.getElementById('btn-skip-back').addEventListener('click', () => skipSeconds(-5));
 document.getElementById('btn-skip-fwd').addEventListener('click', () => skipSeconds(5));
 document.getElementById('btn-submit').addEventListener('click', submitAnnotation);
 document.getElementById('btn-delete').addEventListener('click', deleteEpisode);
+document.getElementById('btn-save-trim').addEventListener('click', saveTrim);
+document.getElementById('btn-save-subtasks').addEventListener('click', saveSubtasks);
+
+async function saveAll() {
+  if (!currentDataset || !episodes.length) return;
+  const task = document.getElementById('task-input').value.trim();
+  const toSave = [];
+  if (task) toSave.push(() => submitAnnotation(true));
+  if (trimState.dirty) toSave.push(() => saveTrim(true));
+  if (subtaskState.dirty) toSave.push(() => saveSubtasks(true));
+  if (!toSave.length) { showStatus('Nothing to save', true); return; }
+  const errors = await Promise.allSettled(toSave.map(fn => fn()));
+  const failed = errors.filter(r => r.status === 'rejected');
+  if (failed.length) {
+    showStatus('Error: ' + failed[0].reason?.message, false);
+  } else {
+    showStatus('Saved', true);
+  }
+}
 
 document.addEventListener('keydown', e => {
-  if (e.target.tagName === 'TEXTAREA' || e.target.tagName === 'INPUT') return;
+  if ((e.ctrlKey || e.metaKey) && e.code === 'KeyS') {
+    e.preventDefault();
+    saveAll();
+    return;
+  }
+  // Block shortcuts when typing in text fields, but allow them when a range
+  // input (seekbar) is focused — just prevent the default slider nudge.
+  if (e.target.tagName === 'TEXTAREA') return;
+  if (e.target.tagName === 'INPUT' && e.target.type !== 'range') return;
   if (e.code === 'Space') { e.preventDefault(); togglePlay(); }
-  if (e.code === 'ArrowLeft') skipSeconds(-5);
-  if (e.code === 'ArrowRight') skipSeconds(5);
-  if (e.code === 'ArrowUp') loadEpisode(currentEpIdx - 1);
-  if (e.code === 'ArrowDown') loadEpisode(currentEpIdx + 1);
+  if (e.code === 'ArrowLeft' || e.code === 'ArrowRight') {
+    e.preventDefault();
+    if (e.ctrlKey || e.metaKey) {
+      const sel = document.getElementById('dataset-select');
+      const dir = e.code === 'ArrowLeft' ? -1 : 1;
+      const next = sel.selectedIndex + dir;
+      if (next >= 0 && next < sel.options.length) {
+        sel.selectedIndex = next;
+        selectDataset(sel.value);
+      }
+    } else {
+      if (e.code === 'ArrowLeft') loadEpisode(currentEpIdx - 1);
+      else loadEpisode(currentEpIdx + 1);
+    }
+  }
 });
 
 const seekbar = document.getElementById('seekbar');
@@ -515,5 +934,52 @@ seekbar.addEventListener('input', () => {
 seekbar.addEventListener('mouseup', () => { seekSuppressed = false; });
 seekbar.addEventListener('touchend', () => { seekSuppressed = false; });
 
+const trimTimeline = document.getElementById('trim-timeline');
+const trimHandleStart = document.getElementById('trim-handle-start');
+const trimHandleEnd = document.getElementById('trim-handle-end');
+
+function beginTrimDrag(handle, event) {
+  if (!episodes.length) return;
+  trimState.dragging = handle;
+  event.preventDefault();
+  document.body.classList.add('trim-dragging');
+  document.getElementById(`trim-handle-${handle}`).classList.add('dragging');
+  setTrimBoundary(handle, trimValueFromPointer(event.clientX));
+}
+
+function endTrimDrag() {
+  if (!trimState.dragging) return;
+  document.body.classList.remove('trim-dragging');
+  document.getElementById(`trim-handle-${trimState.dragging}`)?.classList.remove('dragging');
+  trimState.dragging = null;
+}
+
+trimHandleStart.addEventListener('mousedown', event => beginTrimDrag('start', event));
+trimHandleEnd.addEventListener('mousedown', event => beginTrimDrag('end', event));
+
+trimTimeline.addEventListener('mousedown', event => {
+  if (!episodes.length) return;
+  if (event.target === trimHandleStart || event.target === trimHandleEnd) return;
+  const targetValue = trimValueFromPointer(event.clientX);
+  const startDist = Math.abs(targetValue - trimState.start_s);
+  const endDist = Math.abs(targetValue - trimState.end_s);
+  beginTrimDrag(startDist <= endDist ? 'start' : 'end', event);
+});
+
+document.addEventListener('mousemove', event => {
+  if (trimState.dragging) {
+    setTrimBoundary(trimState.dragging, trimValueFromPointer(event.clientX));
+  }
+  if (subtaskState.draggingBoundary !== null) {
+    updateSubtaskBoundary(subtaskState.draggingBoundary, subtaskBoundaryFromPointer(event.clientX));
+  }
+});
+
+document.addEventListener('mouseup', () => {
+  endTrimDrag();
+  endSubtaskDrag();
+});
+
 // ── Boot ──────────────────────────────────────────────────────────────────
+buildSubtaskTimeline();
 loadDatasets();

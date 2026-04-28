@@ -40,7 +40,9 @@ from dataset_utils import (
     infer_timestamp_ns,
     load_annotations,
     load_camera_frames,
+    load_subtasks,
     load_text_rows,
+    load_trims,
     read_json,
     read_jsonl,
 )
@@ -56,6 +58,18 @@ DEFAULT_ENCODER_QUEUE_MAXSIZE = 60
 DEFAULT_BLANK_MAX_STEPS = 1000
 DEFAULT_MIN_GRIPPER_COMMAND = 0.1
 DEFAULT_MIN_GRIPPER_WIDTH_SPAN = 0.002
+
+# Natural-language task strings used per-step when subtask phases are annotated.
+# Each key matches the phase id saved by the labeler; values are the task strings
+# written into the LeRobotDataset frame and used for SmolVLA language conditioning.
+SUBTASK_PHASE_TASKS: dict[str, str] = {
+    "approach_can":  "Move the gripper to the soup can",
+    "grasp_can":     "Close the gripper around the soup can",
+    "lift_can":      "Lift the soup can off the table",
+    "move_to_tray":  "Carry the soup can to the green tray",
+    "release_can":   "Place the soup can into the tray",
+    "retract_arm":   "Move the arm away from the tray",
+}
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
 LOGGER = logging.getLogger(__name__)
@@ -130,6 +144,8 @@ class SmolVLADatasetConverter:
         self.episode_rows = read_jsonl(dataset_dir / "episode_events.jsonl")
         self.text_rows = load_text_rows(dataset_dir)
         self._annotations = load_annotations(dataset_dir)
+        self._trims = load_trims(dataset_dir)
+        self._subtasks = load_subtasks(dataset_dir)
         self.camera_frames = load_camera_frames(dataset_dir)
         if self.cameras is not None:
             unknown = set(self.cameras) - set(self.camera_frames)
@@ -138,6 +154,10 @@ class SmolVLADatasetConverter:
             self.camera_frames = {name: self.camera_frames[name] for name in self.cameras if name in self.camera_frames}
         self._camera_timestamps: dict[str, list[int]] = {
             name: [frame.timestamp_ns for frame in frames]
+            for name, frames in self.camera_frames.items()
+        }
+        self._camera_video_seconds: dict[str, list[float]] = {
+            name: self._camera_video_timeline_seconds(frames)
             for name, frames in self.camera_frames.items()
         }
         self._feature_name_cache: dict[str, str] = {
@@ -190,6 +210,134 @@ class SmolVLADatasetConverter:
         default_camera = sorted(self.camera_frames)[0]
         return "observation.images.top" if camera_name == default_camera else f"observation.images.{camera_name}"
 
+    @staticmethod
+    def _camera_video_timeline_seconds(frames: list[CameraFrame]) -> list[float]:
+        if not frames:
+            return []
+        if len(frames) < 2:
+            fps = 30
+        else:
+            deltas = [
+                frames[i + 1].timestamp_ns - frames[i].timestamp_ns
+                for i in range(len(frames) - 1)
+                if frames[i + 1].timestamp_ns > frames[i].timestamp_ns
+            ]
+            fps = max(1, round(1_000_000_000.0 / float(np.median(np.asarray(deltas, dtype=np.float64))))) if deltas else 30
+        return [frame.video_frame_index / fps for frame in frames]
+
+    def _trim_camera_name(self) -> str:
+        if self.primary_camera is not None and self.primary_camera in self.camera_frames:
+            return self.primary_camera
+        return sorted(self.camera_frames)[0]
+
+    def _timestamp_for_video_time(self, camera_name: str, video_time_s: float) -> int | None:
+        video_seconds = self._camera_video_seconds.get(camera_name, [])
+        frames = self.camera_frames.get(camera_name, [])
+        if not video_seconds or not frames:
+            return None
+
+        insert_at = np.searchsorted(np.asarray(video_seconds, dtype=np.float64), float(video_time_s), side="left")
+        candidate_indices: list[int] = []
+        if insert_at < len(video_seconds):
+            candidate_indices.append(int(insert_at))
+        if insert_at > 0:
+            candidate_indices.append(int(insert_at - 1))
+        if not candidate_indices:
+            return None
+
+        best_index = min(candidate_indices, key=lambda idx: abs(video_seconds[idx] - float(video_time_s)))
+        return int(frames[best_index].timestamp_ns)
+
+    def _apply_episode_trim(
+        self,
+        episode_index: int,
+        robot_slice: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        trim = self._trims.get(episode_index)
+        if not trim or not robot_slice:
+            return robot_slice
+
+        camera_name = self._trim_camera_name()
+        trim_start_s = float(trim.get("trim_start_s", 0.0))
+        trim_end_s = float(trim.get("trim_end_s", 0.0))
+        if trim_end_s <= trim_start_s:
+            LOGGER.warning(
+                "Ignoring invalid trim for episode %d: start=%.4fs end=%.4fs",
+                episode_index,
+                trim_start_s,
+                trim_end_s,
+            )
+            return robot_slice
+
+        start_ts = self._timestamp_for_video_time(camera_name, trim_start_s)
+        end_ts = self._timestamp_for_video_time(camera_name, trim_end_s)
+        if start_ts is None or end_ts is None:
+            LOGGER.warning("Could not resolve trim timestamps for episode %d on camera '%s'", episode_index, camera_name)
+            return robot_slice
+
+        trimmed_rows = [
+            row for row in robot_slice
+            if start_ts <= infer_timestamp_ns(row) <= end_ts
+        ]
+        if not trimmed_rows:
+            LOGGER.warning(
+                "Trim removed every step from episode %d; keeping original episode bounds",
+                episode_index,
+            )
+            return robot_slice
+        LOGGER.info(
+            "Episode %d trimmed: %d → %d steps (%.3f s – %.3f s)",
+            episode_index, len(robot_slice), len(trimmed_rows), trim_start_s, trim_end_s,
+        )
+        return trimmed_rows
+
+    def _resolve_subtask_phases(
+        self,
+        episode_index: int,
+    ) -> list[dict[str, Any]] | None:
+        """Convert subtask video-second boundaries to robot-timestamp ranges.
+
+        Returns a list of phase dicts with keys: phase, start_ns, end_ns, start_s, end_s.
+        Returns None if no subtask data exists or timestamps cannot be resolved.
+        """
+        phases = self._subtasks.get(episode_index)
+        if not phases:
+            return None
+        camera_name = self._trim_camera_name()
+        resolved: list[dict[str, Any]] = []
+        for phase in phases:
+            start_ts = self._timestamp_for_video_time(camera_name, float(phase["start_s"]))
+            end_ts = self._timestamp_for_video_time(camera_name, float(phase["end_s"]))
+            if start_ts is None or end_ts is None:
+                LOGGER.warning(
+                    "Could not resolve subtask timestamps for episode %d phase '%s'; skipping subtasks",
+                    episode_index, phase.get("phase", "?"),
+                )
+                return None
+            resolved.append({
+                "phase": phase.get("phase", ""),
+                "start_ns": start_ts,
+                "end_ns": end_ts,
+                "start_s": float(phase["start_s"]),
+                "end_s": float(phase["end_s"]),
+            })
+        return resolved
+
+    @staticmethod
+    def _subtask_for_step(
+        timestamp_ns: int,
+        resolved_phases: list[dict[str, Any]],
+    ) -> str:
+        """Return the phase ID for a step timestamp, assigning the closest phase if between boundaries."""
+        for phase in resolved_phases:
+            if phase["start_ns"] <= timestamp_ns <= phase["end_ns"]:
+                return phase["phase"]
+        # Assign to closest phase when timestamp falls in a small inter-phase gap.
+        return min(
+            resolved_phases,
+            key=lambda p: min(abs(p["start_ns"] - timestamp_ns), abs(p["end_ns"] - timestamp_ns)),
+        )["phase"]
+
     def _match_camera_frames_batch(
         self, timestamps_ns: list[int], camera_name: str
     ) -> list[CameraFrame | None]:
@@ -231,19 +379,91 @@ class SmolVLADatasetConverter:
         return Counter(synced_texts).most_common(1)[0][0]
 
     def _state_vector(self, row: dict[str, Any]) -> np.ndarray:
-        robot_state = row["robot_state"]
-        joint_positions = [float(v) for v in robot_state.get("q", [])]
-        gripper_width = float(robot_state.get("gripper_width", 0.0))
-        state = joint_positions + [gripper_width]
+        rs = row["robot_state"]
+        q   = [float(v) for v in rs.get("q", [])]
+        dq  = [float(v) for v in rs.get("dq", [])]
+        tcp_pos    = [float(v) for v in rs.get("tcp_position_xyz", [])]
+        tcp_orient = [float(v) for v in rs.get("tcp_orientation_xyzw", [])]
+        gripper    = [float(rs.get("gripper_width", 0.0))]
+        state = q + dq + tcp_pos + tcp_orient + gripper
         if not state:
             raise KeyError("robot_state.q was missing; cannot build observation.state")
         return np.asarray(state, dtype=np.float32)
 
+    def _state_dimension_names(self) -> list[str]:
+        """Build named dimension list from the first robot row's actual field sizes."""
+        rs = self.robot_rows[0]["robot_state"]
+        names: list[str] = []
+        names += [f"q_{i}"  for i in range(len(rs.get("q",  [])))]
+        names += [f"dq_{i}" for i in range(len(rs.get("dq", [])))]
+        names += ["tcp_x", "tcp_y", "tcp_z"][: len(rs.get("tcp_position_xyz", []))]
+        names += ["tcp_qx", "tcp_qy", "tcp_qz", "tcp_qw"][: len(rs.get("tcp_orientation_xyzw", []))]
+        names += ["gripper_width"]
+        return names
+
+    def _action_dimension_names(self) -> list[str]:
+        """Build named action dimension list from the first robot row's actual field sizes."""
+        ea = self.robot_rows[0]["executed_action"]
+        names: list[str] = []
+        names += ["delta_x", "delta_y", "delta_z"][: len(ea.get("cartesian_delta_translation", []))]
+        names += ["delta_rx", "delta_ry", "delta_rz"][: len(ea.get("cartesian_delta_rotation", []))]
+        names += ["gripper_command"]
+        return names
+
+    def _warn_problematic_feature_std(self, episodes: list[dict[str, Any]]) -> None:
+        """Warn when per-dataset feature std is zero/near-zero to flag normalization risks."""
+        state_names = self._state_dimension_names()
+        action_names = self._action_dimension_names()
+
+        state_rows = [
+            step["observation.state"]
+            for episode in episodes
+            for step in episode["steps"]
+        ]
+        action_rows = [
+            step["action"]
+            for episode in episodes
+            for step in episode["steps"]
+        ]
+        if not state_rows or not action_rows:
+            return
+
+        state_std = np.std(np.stack(state_rows, axis=0), axis=0)
+        action_std = np.std(np.stack(action_rows, axis=0), axis=0)
+
+        near_zero_state_indices = np.where(state_std <= 1e-6)[0].tolist()
+        if near_zero_state_indices:
+            details = ", ".join(
+                f"{state_names[idx]} (std={float(state_std[idx]):.3e})"
+                for idx in near_zero_state_indices
+            )
+            LOGGER.warning(
+                "State dimension(s) with near-zero std in dataset '%s': %s. "
+                "This can amplify MEAN_STD normalization on single-dataset runs; "
+                "cross-dataset stat aggregation is recommended.",
+                self.dataset_dir.name,
+                details,
+            )
+
+        zero_action_indices = np.where(action_std <= 1e-12)[0].tolist()
+        if zero_action_indices:
+            details = ", ".join(
+                f"{action_names[idx]} (std={float(action_std[idx]):.3e})"
+                for idx in zero_action_indices
+            )
+            LOGGER.warning(
+                "Action dimension(s) with zero std in dataset '%s': %s. "
+                "Keeping these action dimensions (expected for some subsets); "
+                "cross-dataset stats typically restore non-zero variance.",
+                self.dataset_dir.name,
+                details,
+            )
+
     def _action_vector(self, row: dict[str, Any]) -> np.ndarray:
-        executed_action = row["executed_action"]
-        translation = [float(v) for v in executed_action.get("cartesian_delta_translation", [])]
-        rotation = [float(v) for v in executed_action.get("cartesian_delta_rotation", [])]
-        gripper = [float(executed_action.get("gripper_command", 0.0))]
+        ea = row["executed_action"]
+        translation = [float(v) for v in ea.get("cartesian_delta_translation", [])]
+        rotation    = [float(v) for v in ea.get("cartesian_delta_rotation", [])]
+        gripper     = [float(ea.get("gripper_command", 0.0))]
         action = translation + rotation + gripper
         if not action:
             raise KeyError("executed_action was missing; cannot build action")
@@ -370,16 +590,28 @@ class SmolVLADatasetConverter:
         first_step = episodes[0]["steps"][0]
         state_dim = int(first_step["observation.state"].shape[0])
         action_dim = int(first_step["action"].shape[0])
+        state_names = self._state_dimension_names()
+        action_names = self._action_dimension_names()
+
+        if len(state_names) != state_dim:
+            raise ValueError(
+                f"State feature name count ({len(state_names)}) does not match state dim ({state_dim})."
+            )
+        if len(action_names) != action_dim:
+            raise ValueError(
+                f"Action feature name count ({len(action_names)}) does not match action dim ({action_dim})."
+            )
+
         features: dict[str, Any] = {
             "observation.state": {
                 "dtype": "float32",
                 "shape": (state_dim,),
-                "names": {"motors": [f"state_{i}" for i in range(state_dim)]},
+                "names": {"motors": state_names},
             },
             "action": {
                 "dtype": "float32",
                 "shape": (action_dim,),
-                "names": {"motors": [f"action_{i}" for i in range(action_dim)]},
+                "names": {"motors": action_names},
             },
         }
         for camera_name, frames in self.camera_frames.items():
@@ -431,6 +663,7 @@ class SmolVLADatasetConverter:
             robot_slice = self.robot_rows[start_idx:end_idx]
             if not robot_slice:
                 continue
+            robot_slice = self._apply_episode_trim(episode_index, robot_slice)
             if self.max_steps_per_episode is not None:
                 robot_slice = robot_slice[: self.max_steps_per_episode]
 
@@ -473,10 +706,30 @@ class SmolVLADatasetConverter:
                 synced_text_values.extend(item["text"] for item in alignment if item["text"])
 
             output_index = len(episodes)
+            # Use episode_index (boundary position) so annotation/trim/subtask lookups
+            # stay consistent when earlier episodes have empty robot slices and are skipped.
             task = self._annotations.get(
-                output_index,
+                episode_index,
                 self._dominant_episode_text(synced_text_values, fallback=f"episode_{output_index:06d}"),
             )
+
+            resolved_phases = self._resolve_subtask_phases(episode_index)
+            if resolved_phases:
+                ep_start_ns = step_timestamps[0]
+                for step in steps:
+                    step["subtask"] = self._subtask_for_step(step["timestamp_ns"], resolved_phases)
+                # Rebase phase times to be episode-relative (seconds from first step).
+                subtask_phases_output = [
+                    {
+                        "phase": p["phase"],
+                        "start_s": round(max(0.0, (p["start_ns"] - ep_start_ns) / 1e9), 4),
+                        "end_s": round(max(0.0, (p["end_ns"] - ep_start_ns) / 1e9), 4),
+                    }
+                    for p in resolved_phases
+                ]
+            else:
+                subtask_phases_output = None
+
             quality = self._episode_quality(steps)
             episodes.append({
                 "episode_index": output_index,
@@ -484,6 +737,7 @@ class SmolVLADatasetConverter:
                 "steps": steps,
                 "text_alignment": text_alignment,
                 "quality": quality,
+                "subtask_phases": subtask_phases_output,
             })
 
         LOGGER.info("Built %d episode(s).", len(episodes))
@@ -509,6 +763,7 @@ class SmolVLADatasetConverter:
             )
 
         self._write_episode_report(all_episodes, episodes, suppressed_episodes)
+        self._warn_problematic_feature_std(episodes)
 
         if suppressed_episodes:
             suppressed_indices = [episode["episode_index"] for episode in suppressed_episodes]
@@ -547,9 +802,21 @@ class SmolVLADatasetConverter:
             for episode_number, episode in enumerate(pbar, start=1):
                 ep_start = time.monotonic()
                 pbar.set_postfix({"ep": f"{episode_number}/{total}", "steps": len(episode["steps"])})
+                has_subtasks = bool(episode.get("subtask_phases"))
+                if has_subtasks:
+                    LOGGER.info(
+                        "Episode %d: writing per-step subtask tasks (%d phases)",
+                        episode["episode_index"], len(episode["subtask_phases"]),
+                    )
                 for step in episode["steps"]:
+                    subtask_id: str | None = step.get("subtask") if has_subtasks else None
+                    step_task = (
+                        SUBTASK_PHASE_TASKS.get(subtask_id, episode["task"])
+                        if subtask_id
+                        else episode["task"]
+                    )
                     frame_dict: dict[str, Any] = {
-                        "task": episode["task"],
+                        "task": step_task,
                         "observation.state": torch.from_numpy(step["observation.state"].copy()),
                         "action": torch.from_numpy(step["action"].copy()),
                     }
@@ -560,14 +827,32 @@ class SmolVLADatasetConverter:
                     dataset.add_frame(frame_dict)
                 dataset.save_episode(parallel_encoding=True)
                 elapsed = time.monotonic() - ep_start
+                task_desc = f"subtask phases" if has_subtasks else f"task: {episode['task']}"
                 tqdm.write(
                     f"  Episode {episode_number}/{total} done in {elapsed:.1f}s"
-                    f" — {len(episode['steps'])} steps, task: {episode['task']}"
+                    f" — {len(episode['steps'])} steps, {task_desc}"
                 )
             dataset.finalize()
         finally:
             for reader in readers.values():
                 reader.capture.release()
+
+        subtask_rows = [
+            {"episode_index": ep["episode_index"], "phases": ep["subtask_phases"]}
+            for ep in episodes
+            if ep.get("subtask_phases")
+        ]
+        if subtask_rows:
+            subtasks_path = self.output_dir / "subtasks.jsonl"
+            with subtasks_path.open("w", encoding="utf-8") as f:
+                for row in subtask_rows:
+                    f.write(json.dumps(row) + "\n")
+            LOGGER.info(
+                "Wrote subtask phase metadata for %d/%d episode(s) to %s",
+                len(subtask_rows), len(episodes), subtasks_path,
+            )
+        else:
+            LOGGER.info("No subtask annotations found; subtasks.jsonl not written.")
 
         tqdm.write(f"Conversion complete. Output: {self.output_dir}")
         return self.output_dir
