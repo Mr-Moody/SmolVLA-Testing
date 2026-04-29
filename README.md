@@ -1,10 +1,11 @@
-# SmolVLA Dataset + Training Utilities
+# SmolVLA / Pi0 Dataset + Training Utilities
 
 This repository contains:
 
 - `data_cleaner.py`: filters a raw recorded session to motion-only, camera-covered steps.
 - `data_converter.py`: converts a cleaned session to native LeRobotDataset v3 format.
-- `main.py`: trains SmolVLA on a local LeRobotDataset v3 export.
+- `main.py`: trains SmolVLA, Pi0, or Pi0.5 on a local LeRobotDataset v3 export.
+- `train_pi0.py`: Pi0 / Pi0.5 training backend (called by `main.py`, not run directly).
 
 ## Project Layout
 
@@ -20,21 +21,31 @@ Data directories created by the pipeline:
 
 ```text
 SmolVLA-Testing/
-  raw_datasets/<dataset_name>/       ← recorded session (input)
-  cleaned_datasets/<dataset_name>/   ← after data_cleaner.py
-  lerobot_datasets/<dataset_name>/   ← after data_converter.py (LeRobot v3)
-  outputs/<dataset_name>_smolvla/    ← after main.py (checkpoints + logs)
+  raw_datasets/<dataset_name>/           ← recorded session (input)
+  cleaned_datasets/<dataset_name>/       ← after data_cleaner.py
+  lerobot_datasets/<dataset_name>/       ← after data_converter.py (LeRobot v3)
+  outputs/<dataset_name>_smolvla/        ← after main.py --model-type smolvla
+  outputs/<dataset_name>_pi0/            ← after main.py --model-type pi0
+  outputs/<dataset_name>_pi05/           ← after main.py --model-type pi05
 ```
 
 Most commands below are run from `SmolVLA-Testing/`.
 
 ## Installation
 
-Install the `lerobot` package with the SmolVLA extras into its own uv environment from within the `lerobot` sibling directory:
+Install the `lerobot` package with the relevant extras into its own uv environment from within the `lerobot` sibling directory:
 
 ```bash
 cd ../lerobot
+
+# SmolVLA
 uv pip install -e ".[smolvla]"
+
+# Pi0 / Pi0.5 (adds transformers PaliGemma support)
+uv pip install -e ".[pi0]"
+
+# Both
+uv pip install -e ".[smolvla,pi0]"
 ```
 
 ## Environment Notes
@@ -56,20 +67,31 @@ uv run --project ../lerobot python data_cleaner.py <dataset_name>
 # 2. Convert
 uv run --project ../lerobot python data_converter.py <dataset_name> --primary-camera <camera_name>
 
-# 3. Train
-uv run --project ../lerobot python main.py --dataset-root lerobot_datasets/<dataset_name>
+# 3. Train  (SmolVLA is the default; pass --model-type pi0 or --model-type pi05 to switch)
+uv run --project ../lerobot python main.py \
+  --dataset-root lerobot_datasets/<dataset_name> \
+  [--model-type smolvla|pi0|pi05]
 ```
 
-Example end-to-end for a dataset called `example` with an `ee_zed_m` primary camera:
+Example end-to-end for a dataset called `socket` with dual ZED Mini + third-person cameras:
 
 ```bash
-uv run --project ../lerobot python data_cleaner.py example --generate-tasks --force
-uv run --project ../lerobot python data_converter.py example --primary-camera ee_zed_m --force
+uv run --project ../lerobot python data_cleaner.py socket --generate-tasks --force
+uv run --project ../lerobot python data_converter.py socket --primary-camera ee_zed_m_left --force
+
+# SmolVLA
 uv run --project ../lerobot python main.py \
-  --dataset-root lerobot_datasets/example \
+  --dataset-root lerobot_datasets/socket \
+  --model-type smolvla \
   --steps 20000 \
-  --batch-size 8 \
-  --device cuda
+  --batch-size 8
+
+# Pi0
+uv run --project ../lerobot python main.py \
+  --dataset-root lerobot_datasets/socket \
+  --model-type pi0 \
+  --steps 20000 \
+  --batch-size 4
 ```
 
 ## Command Reference
@@ -124,20 +146,21 @@ Options:
 | `--max-steps-per-episode` | — | Limit steps per episode |
 | `--force` | — | Overwrite existing output directory |
 
-### 3) Train SmolVLA
+### 3) Train
 
 ```bash
 uv run --project ../lerobot python main.py --dataset-root <path> [options]
 ```
 
-Options:
+**Common options** (all model types):
 
 | Flag | Default | Description |
 |------|---------|-------------|
+| `--model-type` | `smolvla` | Policy architecture: `smolvla`, `pi0`, or `pi05` |
 | `--dataset-root` | *(required)* | Local LeRobotDataset v3 export directory |
 | `--lerobot-root` | *(auto-detected)* | Path to local lerobot clone |
-| `--policy-path` | `lerobot/smolvla_base` | Base SmolVLA checkpoint or HF model id |
-| `--output-dir` | `outputs/<dataset>_smolvla` | Directory for checkpoints and logs |
+| `--policy-path` | *(model default)* | Pretrained checkpoint or HF model id (see defaults below) |
+| `--output-dir` | `outputs/<dataset>_<model-type>` | Directory for checkpoints and logs |
 | `--batch-size` | `8` | Training batch size |
 | `--steps` | `20000` | Training steps |
 | `--device` | `cuda` | Training device (`cuda` or `cpu`) |
@@ -148,9 +171,29 @@ Options:
 | `--seed` | `1000` | Training seed |
 | `--use-amp` | — | Enable automatic mixed precision |
 | `--episodes` | — | Comma-separated episode subset, e.g. `0,1,2` |
+| `--resume` | — | Resume from last checkpoint in `--output-dir` |
 | `--job-name` | — | Custom run name |
 | `--push-to-hub` | — | Push trained policy to Hugging Face Hub |
 | `--policy-repo-id` | — | Required with `--push-to-hub`, e.g. `user/model` |
+
+**Default pretrained base checkpoints by model type:**
+
+| `--model-type` | Default `--policy-path` | Normalization |
+|----------------|-------------------------|---------------|
+| `smolvla` | `lerobot/smolvla_base` | MEAN_STD |
+| `pi0` | `lerobot/pi0_base` | MEAN_STD |
+| `pi05` | `lerobot/pi05_base` | QUANTILES |
+
+**Pi0 / Pi0.5 only options** (ignored for `smolvla`):
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--freeze-vision-encoder` | — | Freeze the PaliGemma vision encoder |
+| `--train-expert-only` | — | Freeze entire VLM; train only the action expert and projections |
+| `--gradient-checkpointing` | — | Reduce VRAM at the cost of training speed |
+| `--dtype` | `float32` | Model weight dtype: `float32` or `bfloat16` |
+
+> **VRAM guidance:** Pi0 and Pi0.5 use a PaliGemma 2B backbone (~20–24 GB in `float32` for a full fine-tune). Use `--dtype bfloat16` and/or `--gradient-checkpointing` if VRAM-constrained. SmolVLA uses a 500M backbone and fits comfortably in 16 GB.
 
 ## Utilities
 
