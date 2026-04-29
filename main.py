@@ -1,11 +1,15 @@
 r"""
-Train SmolVLA on an exported LeRobotDataset v3 dataset.
+Train SmolVLA, Pi0, or Pi0.5 on an exported LeRobotDataset v3 dataset.
 
-Example:
-    /home/thomas/UCL/Industrial\ Project/lerobot/.venv/bin/python main.py \
-        --dataset-root lerobot_datasets/example \
-        --steps 20000 \
-        --batch-size 8
+Examples:
+    # SmolVLA (default)
+    python main.py --dataset-root lerobot_datasets/example --steps 20000 --batch-size 8
+
+    # Pi0
+    python main.py --model-type pi0 --dataset-root lerobot_datasets/socket --steps 20000 --batch-size 4
+
+    # Pi0.5
+    python main.py --model-type pi05 --dataset-root lerobot_datasets/socket --steps 20000 --batch-size 4
 """
 
 from __future__ import annotations
@@ -21,7 +25,11 @@ from pathlib import Path
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
 LOGGER = logging.getLogger(__name__)
 
-DEFAULT_POLICY_PATH = "lerobot/smolvla_base"
+DEFAULT_POLICY_PATHS = {
+    "smolvla": "lerobot/smolvla_base",
+    "pi0":     "lerobot/pi0_base",
+    "pi05":    "lerobot/pi05_base",
+}
 
 
 def parse_episode_list(value: str | None) -> list[int] | None:
@@ -202,7 +210,16 @@ def train_smolvla(
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Train SmolVLA on a local LeRobotDataset v3 export.")
+    parser = argparse.ArgumentParser(
+        description="Train a VLA policy (SmolVLA, Pi0, or Pi0.5) on a local LeRobotDataset v3 export."
+    )
+    parser.add_argument(
+        "--model-type",
+        type=str,
+        default="smolvla",
+        choices=["smolvla", "pi0", "pi05"],
+        help="Policy architecture to train (default: smolvla).",
+    )
     parser.add_argument(
         "--dataset-root",
         type=Path,
@@ -221,14 +238,18 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--policy-path",
         type=str,
-        default=DEFAULT_POLICY_PATH,
-        help="Pretrained SmolVLA checkpoint or model id to fine-tune.",
+        default=None,
+        help=(
+            "Pretrained checkpoint or HuggingFace model id to fine-tune. "
+            "Defaults to lerobot/smolvla_base, lerobot/pi0_base, or lerobot/pi05_base "
+            "depending on --model-type."
+        ),
     )
     parser.add_argument(
         "--output-dir",
         type=Path,
         default=None,
-        help="Directory for checkpoints and logs. Defaults to outputs/<dataset>_smolvla.",
+        help="Directory for checkpoints and logs. Defaults to outputs/<dataset>_<model-type>.",
     )
     parser.add_argument("--batch-size", type=int, default=8, help="Training batch size.")
     parser.add_argument("--steps", type=int, default=20_000, help="Number of training steps.")
@@ -267,20 +288,45 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=None,
         help="Required when --push-to-hub is set, e.g. your-user/your-model-name.",
     )
+    # Pi0 / Pi0.5 specific flags (ignored when --model-type smolvla)
+    parser.add_argument(
+        "--freeze-vision-encoder",
+        action="store_true",
+        help="[Pi0/Pi0.5] Freeze the PaliGemma vision encoder during training.",
+    )
+    parser.add_argument(
+        "--train-expert-only",
+        action="store_true",
+        help="[Pi0/Pi0.5] Freeze the entire VLM; train only the action expert and projections.",
+    )
+    parser.add_argument(
+        "--gradient-checkpointing",
+        action="store_true",
+        help="[Pi0/Pi0.5] Enable gradient checkpointing to reduce VRAM at the cost of speed.",
+    )
+    parser.add_argument(
+        "--dtype",
+        type=str,
+        default="float32",
+        choices=["float32", "bfloat16"],
+        help="[Pi0/Pi0.5] Model weight dtype (default: float32).",
+    )
     return parser
 
 
 def main() -> None:
     args = build_arg_parser().parse_args()
     dataset_root: Path = args.dataset_root
-    output_dir = args.output_dir or Path("outputs") / f"{dataset_root.name}_smolvla"
+    model_type: str = args.model_type
+    policy_path: str = args.policy_path or DEFAULT_POLICY_PATHS[model_type]
+    output_dir = args.output_dir or Path("outputs") / f"{dataset_root.name}_{model_type}"
     lerobot_root = resolve_lerobot_root(args.lerobot_root)
+    episodes = parse_episode_list(args.episodes)
 
-    train_smolvla(
+    common = dict(
         dataset_root=dataset_root,
         lerobot_root=lerobot_root,
-        resume=args.resume,
-        policy_path=args.policy_path,
+        policy_path=policy_path,
         output_dir=output_dir,
         batch_size=args.batch_size,
         steps=args.steps,
@@ -291,11 +337,25 @@ def main() -> None:
         eval_freq=args.eval_freq,
         seed=args.seed,
         use_amp=args.use_amp,
-        episodes=parse_episode_list(args.episodes),
+        resume=args.resume,
+        episodes=episodes,
         job_name=args.job_name,
         push_to_hub=args.push_to_hub,
         policy_repo_id=args.policy_repo_id,
     )
+
+    if model_type == "smolvla":
+        train_smolvla(**common)
+    else:
+        from train_pi0 import train_pi0
+        train_pi0(
+            **common,
+            model_type=model_type,
+            freeze_vision_encoder=args.freeze_vision_encoder,
+            train_expert_only=args.train_expert_only,
+            gradient_checkpointing=args.gradient_checkpointing,
+            dtype=args.dtype,
+        )
 
 
 if __name__ == "__main__":
