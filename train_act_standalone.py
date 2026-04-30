@@ -150,7 +150,7 @@ def train_act_model(
     
     # Load metadata and determine features
     repo_id = f"local/{dataset_root.name}"
-    dataset_metadata = LeRobotDatasetMetadata(repo_id)
+    dataset_metadata = LeRobotDatasetMetadata(repo_id, root=dataset_root)
     features = dataset_to_policy_features(dataset_metadata.features)
     
     # Split into input and output features
@@ -305,7 +305,7 @@ def main():
         "--no-vae", dest="use_vae", action="store_false",
         help="Disable VAE in model",
     )
-    
+
     # Training control
     parser.add_argument(
         "--resume", action="store_true",

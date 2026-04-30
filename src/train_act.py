@@ -142,7 +142,7 @@ def train_act(
         LOGGER.info("Episodes:  %s", episodes)
 
     # Load metadata to get features
-    dataset_metadata = LeRobotDatasetMetadata(repo_id)
+    dataset_metadata = LeRobotDatasetMetadata(repo_id, root=dataset_root)
     features = dataset_to_policy_features(dataset_metadata.features)
     
     # Split features into input and output
