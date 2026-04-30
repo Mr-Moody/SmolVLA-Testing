@@ -25,8 +25,11 @@ rsync -avz --progress \
   --exclude '.git' \
   --exclude 'checkpoints' \
   --exclude 'lerobot_datasets' \
+  --exclude 'raw_datasets' \
   --exclude 'raw_recordings' \
   --exclude 'cleaned_datasets' \
+  --exclude 'train_*.log' \
+  --exclude '*_loss.png' \
   "${LOCAL_PROJECT_ROOT}/" \
   "${SSH_REMOTE}:${REMOTE_CODE_DIR}/"
 

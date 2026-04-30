@@ -13,8 +13,8 @@ WORKFLOW_USER="eredhead"
 REMOTE_PROJECT_DIRNAME="smolvla_project"
 
 # -------- Core run controls --------
-RUN_NAME="test_001"
-DATASET_NAMES=(001)
+RUN_NAME="test_100"
+DATASET_NAMES=(100)
 DATASET_ROOT="/scratch0/${WORKFLOW_USER}/lerobot_datasets"
 SAVE_FREQ=1000
 
