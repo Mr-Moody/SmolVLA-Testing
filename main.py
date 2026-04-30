@@ -6,7 +6,7 @@ Subcommands
   clean    Filter a raw recording to motion-only, camera-covered steps.
   label    Launch the browser-based episode labeling UI.
   convert  Export a cleaned dataset to LeRobotDataset v3 format.
-  train    Fine-tune SmolVLA, Pi0, or Pi0.5 on an exported dataset.
+  train    Fine-tune SmolVLA, Pi0, Pi0.5, or ACT on an exported dataset.
 
 Examples
 --------
@@ -14,7 +14,9 @@ Examples
   uv --project ../lerobot run python main.py label --port 5000
   uv --project ../lerobot run python main.py convert 001 --primary-camera ee_zed_m
   uv --project ../lerobot run python main.py train --dataset-root lerobot_datasets/001 --steps 20000
-  uv --project ../lerobot run python main.py train --model-type pi0 --dataset-root lerobot_datasets/001
+  uv --project ../lerobot run python main.py train --model-type pi0 --dataset-root lerobot_datasets/001 --steps 20000
+  uv --project ../lerobot run python main.py train --model-type act --dataset-root lerobot_datasets/001 --steps 20000
+  uv --project ../lerobot run python main.py train --model-type act --dataset-root lerobot_datasets/001 --chunk-size 50 --vision-backbone resnet50
 """
 
 from __future__ import annotations
@@ -234,16 +236,17 @@ DEFAULT_POLICY_PATHS = {
     "smolvla": "lerobot/smolvla_base",
     "pi0":     "lerobot/pi0_base",
     "pi05":    "lerobot/pi05_base",
+    "act":     "lerobot/act_base",
 }
 
 
 def _add_train_parser(sub: argparse._SubParsersAction) -> None:
     p = sub.add_parser(
         "train",
-        help="Fine-tune SmolVLA, Pi0, or Pi0.5 on an exported LeRobotDataset v3.",
+        help="Fine-tune SmolVLA, Pi0, Pi0.5, or ACT on an exported LeRobotDataset v3.",
     )
     p.add_argument("--model-type", type=str, default="smolvla",
-                   choices=["smolvla", "pi0", "pi05"],
+                   choices=["smolvla", "pi0", "pi05", "act"],
                    help="Policy architecture to train (default: smolvla).")
     p.add_argument("--dataset-root", type=Path, required=True,
                    help="Path to an exported LeRobotDataset v3 root.")
@@ -282,6 +285,18 @@ def _add_train_parser(sub: argparse._SubParsersAction) -> None:
                    help="[Pi0/Pi0.5] Enable gradient checkpointing to reduce VRAM.")
     p.add_argument("--dtype", type=str, default="float32", choices=["float32", "bfloat16"],
                    help="[Pi0/Pi0.5] Model weight dtype (default: float32).")
+    # ACT specific
+    p.add_argument("--chunk-size", type=int, default=100,
+                   help="[ACT] Number of action steps to predict in a chunk (default: 100).")
+    p.add_argument("--n-obs-steps", type=int, default=1,
+                   help="[ACT] Number of observation steps to use (default: 1).")
+    p.add_argument("--use-vae", action="store_true", default=True,
+                   help="[ACT] Use VAE for action modeling (default: True).")
+    p.add_argument("--no-vae", dest="use_vae", action="store_false",
+                   help="[ACT] Disable VAE for action modeling.")
+    p.add_argument("--vision-backbone", type=str, default="resnet18",
+                   choices=["resnet18", "resnet34", "resnet50"],
+                   help="[ACT] Vision backbone architecture (default: resnet18).")
     p.set_defaults(func=_cmd_train)
 
 
@@ -437,6 +452,15 @@ def _cmd_train(args: argparse.Namespace) -> None:
 
     if model_type == "smolvla":
         _train_smolvla(**common)
+    elif model_type == "act":
+        from train_act import train_act
+        train_act(
+            **common,
+            chunk_size=args.chunk_size,
+            n_obs_steps=args.n_obs_steps,
+            use_vae=args.use_vae,
+            vision_backbone=args.vision_backbone,
+        )
     else:
         from train_pi0 import train_pi0
         train_pi0(
