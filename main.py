@@ -10,11 +10,11 @@ Subcommands
 
 Examples
 --------
-  python main.py clean 001 --force
-  python main.py label --port 5000
-  python main.py convert 001 --primary-camera ee_zed_m --vcodec h264_nvenc
-  python main.py train --dataset-root lerobot_datasets/001 --steps 20000
-  python main.py train --model-type pi0 --dataset-root lerobot_datasets/001
+  uv --project ../lerobot run python main.py clean 001 --force
+  uv --project ../lerobot run python main.py label --port 5000
+  uv --project ../lerobot run python main.py convert 001 --primary-camera ee_zed_m
+  uv --project ../lerobot run python main.py train --dataset-root lerobot_datasets/001 --steps 20000
+  uv --project ../lerobot run python main.py train --model-type pi0 --dataset-root lerobot_datasets/001
 """
 
 from __future__ import annotations
@@ -33,43 +33,57 @@ sys.path.insert(0, str(Path(__file__).parent / "src"))
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
 LOGGER = logging.getLogger(__name__)
 
+# ---------------------------------------------------------------------------
+# Hardcoded defaults — must stay in sync with the corresponding src/ modules.
+# They are kept here so that _add_*_parser can register --help text without
+# triggering any heavy imports (torch, flask, lerobot) at startup.
+# ---------------------------------------------------------------------------
+
+# data_cleaner.py / dataset_utils.py
+_CLEAN_DATASETS_ROOT       = Path("raw_datasets")
+_CLEAN_OUTPUT_ROOT         = Path("cleaned_datasets")
+_CLEAN_CAMERA_TOLERANCE_MS = 150.0          # DEFAULT_CAMERA_TOLERANCE_NS / 1e6
+_CLEAN_JOINT_THRESHOLD     = 5e-4
+_CLEAN_GRIPPER_THRESHOLD   = 2e-4
+_CLEAN_TRANS_THRESHOLD     = 5e-6
+_CLEAN_ROT_THRESHOLD       = 5e-5
+
+# data_converter.py
+_CONV_DATASETS_ROOT        = Path("cleaned_datasets")
+_CONV_OUTPUT_ROOT          = Path("lerobot_datasets")
+_CONV_CAMERA_TOLERANCE_MS  = 150.0          # DEFAULT_CAMERA_TOLERANCE_NS / 1e6
+_CONV_TEXT_TOLERANCE_MS    = 2000.0         # DEFAULT_TEXT_TOLERANCE_NS / 1e6
+_CONV_VCODEC               = "h264"
+_CONV_ENCODER_QUEUE        = 60
+_CONV_BLANK_MAX_STEPS      = 1000
+_CONV_MIN_GRIPPER_CMD      = 0.1
+_CONV_MIN_GRIPPER_SPAN     = 0.002
+
 
 # ---------------------------------------------------------------------------
 # clean
 # ---------------------------------------------------------------------------
 
 def _add_clean_parser(sub: argparse._SubParsersAction) -> None:
-    from data_cleaner import (
-        DEFAULT_DATASETS_ROOT,
-        DEFAULT_OUTPUT_ROOT,
-        DEFAULT_CAMERA_TOLERANCE_NS,
-        DEFAULT_JOINT_MOTION_THRESHOLD,
-        DEFAULT_GRIPPER_MOTION_THRESHOLD,
-        DEFAULT_ACTION_TRANSLATION_THRESHOLD,
-        DEFAULT_ACTION_ROTATION_THRESHOLD,
-    )
     p = sub.add_parser("clean", help="Filter a raw recording to motion-only, camera-covered steps.")
     p.add_argument("dataset_name", help="Dataset directory name under --datasets-root.")
-    p.add_argument("--datasets-root", type=Path, default=DEFAULT_DATASETS_ROOT,
+    p.add_argument("--datasets-root", type=Path, default=_CLEAN_DATASETS_ROOT,
                    help="Root directory containing raw datasets (default: %(default)s).")
-    p.add_argument("--output-root", type=Path, default=DEFAULT_OUTPUT_ROOT,
+    p.add_argument("--output-root", type=Path, default=_CLEAN_OUTPUT_ROOT,
                    help="Root directory for cleaned output (default: %(default)s).")
-    p.add_argument("--camera-tolerance-ms", type=float,
-                   default=DEFAULT_CAMERA_TOLERANCE_NS / 1_000_000.0,
-                   help="Max robot-to-camera sync error in ms.")
+    p.add_argument("--camera-tolerance-ms", type=float, default=_CLEAN_CAMERA_TOLERANCE_MS,
+                   help="Max robot-to-camera sync error in ms (default: %(default)s).")
     p.add_argument("--force", action="store_true", help="Overwrite existing output directory.")
     p.add_argument("--max-episodes", type=int, default=None,
                    help="Limit number of episodes to process.")
-    p.add_argument("--joint-motion-threshold", type=float, default=DEFAULT_JOINT_MOTION_THRESHOLD,
-                   help="Max joint delta (rad) considered stationary.")
-    p.add_argument("--gripper-motion-threshold", type=float, default=DEFAULT_GRIPPER_MOTION_THRESHOLD,
-                   help="Max gripper-width delta (m) considered stationary.")
-    p.add_argument("--action-translation-threshold", type=float,
-                   default=DEFAULT_ACTION_TRANSLATION_THRESHOLD,
-                   help="Min cartesian_delta_translation norm considered movement.")
-    p.add_argument("--action-rotation-threshold", type=float,
-                   default=DEFAULT_ACTION_ROTATION_THRESHOLD,
-                   help="Min cartesian_delta_rotation norm considered movement.")
+    p.add_argument("--joint-motion-threshold", type=float, default=_CLEAN_JOINT_THRESHOLD,
+                   help="Max joint delta (rad) considered stationary (default: %(default)s).")
+    p.add_argument("--gripper-motion-threshold", type=float, default=_CLEAN_GRIPPER_THRESHOLD,
+                   help="Max gripper-width delta (m) considered stationary (default: %(default)s).")
+    p.add_argument("--action-translation-threshold", type=float, default=_CLEAN_TRANS_THRESHOLD,
+                   help="Min cartesian_delta_translation norm considered movement (default: %(default)s).")
+    p.add_argument("--action-rotation-threshold", type=float, default=_CLEAN_ROT_THRESHOLD,
+                   help="Min cartesian_delta_rotation norm considered movement (default: %(default)s).")
     p.add_argument("--generate-tasks", action="store_true",
                    help="Auto-assign a task prompt to each kept episode and write annotations.jsonl.")
     p.set_defaults(func=_cmd_clean)
@@ -140,22 +154,11 @@ def _cmd_label(args: argparse.Namespace) -> None:
 # ---------------------------------------------------------------------------
 
 def _add_convert_parser(sub: argparse._SubParsersAction) -> None:
-    from data_converter import (
-        DEFAULT_DATASETS_ROOT,
-        DEFAULT_OUTPUT_ROOT,
-        DEFAULT_CAMERA_TOLERANCE_NS,
-        DEFAULT_TEXT_TOLERANCE_NS,
-        DEFAULT_VCODEC,
-        DEFAULT_ENCODER_QUEUE_MAXSIZE,
-        DEFAULT_BLANK_MAX_STEPS,
-        DEFAULT_MIN_GRIPPER_COMMAND,
-        DEFAULT_MIN_GRIPPER_WIDTH_SPAN,
-    )
     p = sub.add_parser("convert", help="Export a cleaned dataset to LeRobotDataset v3 format.")
     p.add_argument("dataset_name", help="Dataset name under --datasets-root.")
-    p.add_argument("--datasets-root", type=Path, default=DEFAULT_DATASETS_ROOT,
+    p.add_argument("--datasets-root", type=Path, default=_CONV_DATASETS_ROOT,
                    help="Root containing cleaned datasets (default: %(default)s).")
-    p.add_argument("--output-root", type=Path, default=DEFAULT_OUTPUT_ROOT,
+    p.add_argument("--output-root", type=Path, default=_CONV_OUTPUT_ROOT,
                    help="Root for LeRobotDataset output (default: %(default)s).")
     p.add_argument("--repo-id", type=str, default=None,
                    help="LeRobot repo_id (default: local/<dataset_name>).")
@@ -163,18 +166,16 @@ def _add_convert_parser(sub: argparse._SubParsersAction) -> None:
                    help="Camera name to map to observation.images.top.")
     p.add_argument("--cameras", type=str, default=None,
                    help="Comma-separated camera names to include. Omit for all cameras.")
-    p.add_argument("--camera-tolerance-ms", type=float,
-                   default=DEFAULT_CAMERA_TOLERANCE_NS / 1_000_000.0,
-                   help="Max robot-to-camera sync error in ms.")
-    p.add_argument("--text-tolerance-ms", type=float,
-                   default=DEFAULT_TEXT_TOLERANCE_NS / 1_000_000.0,
-                   help="Max text-to-frame sync error in ms.")
+    p.add_argument("--camera-tolerance-ms", type=float, default=_CONV_CAMERA_TOLERANCE_MS,
+                   help="Max robot-to-camera sync error in ms (default: %(default)s).")
+    p.add_argument("--text-tolerance-ms", type=float, default=_CONV_TEXT_TOLERANCE_MS,
+                   help="Max text-to-frame sync error in ms (default: %(default)s).")
     p.add_argument("--force", action="store_true", help="Overwrite existing output directory.")
-    p.add_argument("--vcodec", type=str, default=DEFAULT_VCODEC,
+    p.add_argument("--vcodec", type=str, default=_CONV_VCODEC,
                    help="Video codec (default: %(default)s).")
     p.add_argument("--encoder-threads", type=int, default=None,
                    help="Threads per encoder instance. Omit for codec default.")
-    p.add_argument("--encoder-queue-maxsize", type=int, default=DEFAULT_ENCODER_QUEUE_MAXSIZE,
+    p.add_argument("--encoder-queue-maxsize", type=int, default=_CONV_ENCODER_QUEUE,
                    help="Max buffered frames per camera during encode (default: %(default)s).")
     p.add_argument("--max-episodes", type=int, default=None,
                    help="Limit number of episodes to export.")
@@ -182,11 +183,11 @@ def _add_convert_parser(sub: argparse._SubParsersAction) -> None:
                    help="Limit steps exported per episode.")
     p.add_argument("--keep-blank-episodes", action="store_true",
                    help="Keep short episodes with no gripper activity.")
-    p.add_argument("--blank-max-steps", type=int, default=DEFAULT_BLANK_MAX_STEPS,
+    p.add_argument("--blank-max-steps", type=int, default=_CONV_BLANK_MAX_STEPS,
                    help="Max episode length for blank suppression (default: %(default)s).")
-    p.add_argument("--min-gripper-command", type=float, default=DEFAULT_MIN_GRIPPER_COMMAND,
+    p.add_argument("--min-gripper-command", type=float, default=_CONV_MIN_GRIPPER_CMD,
                    help="Min absolute gripper command for an active event (default: %(default)s).")
-    p.add_argument("--min-gripper-width-span", type=float, default=DEFAULT_MIN_GRIPPER_WIDTH_SPAN,
+    p.add_argument("--min-gripper-width-span", type=float, default=_CONV_MIN_GRIPPER_SPAN,
                    help="Min gripper width span (m) for an active event (default: %(default)s).")
     p.add_argument("--episode-report", type=Path, default=None,
                    help="Optional JSON path for episode classification report.")
@@ -461,8 +462,9 @@ def main() -> None:
     sub = parser.add_subparsers(dest="command", metavar="<command>")
     sub.required = True
 
-    # Subparser defaults are needed for help text, so register all up front.
-    # Heavy imports (torch, lerobot, flask) only happen inside each _cmd_* handler.
+    # Register subparsers up front for --help. All defaults are hardcoded
+    # constants above — no src/ module is imported here, so startup is fast
+    # regardless of which subcommand is used.
     _add_clean_parser(sub)
     _add_label_parser(sub)
     _add_convert_parser(sub)
