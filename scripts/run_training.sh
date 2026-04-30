@@ -419,7 +419,7 @@ trap 'exit_code=$?; kill "${SYNC_PID}" 2>/dev/null || true; rescue_checkpoints "
 RESUME_FLAG=""
 [[ "${RESUME}" == "true" ]] && RESUME_FLAG="--resume"
 
-TRAIN_CMD="cd ${LEROBOT_ROOT} && uv run python ${SMOLVLA_REPO}/src/main.py \
+TRAIN_CMD="cd ${LEROBOT_ROOT} && uv run python ${SMOLVLA_REPO}/main.py train \
     --dataset-root ${TRAIN_DATASET_ROOT} \
     --lerobot-root ${LEROBOT_ROOT} \
     --policy-path ${POLICY_PATH} \

@@ -136,7 +136,7 @@ if [[ "${USE_AMP}" == "true" ]]; then
   AMP_FLAG="--use-amp"
 fi
 
-TRAIN_CMD="cd ${LEROBOT_DIR} && uv run python ${CODE_DIR}/src/main.py \
+TRAIN_CMD="cd ${LEROBOT_DIR} && uv run python ${CODE_DIR}/main.py train \
   --dataset-root ${TRAIN_DATASET_ROOT} \
   --lerobot-root ${LEROBOT_DIR} \
   --policy-path ${POLICY_PATH} \
