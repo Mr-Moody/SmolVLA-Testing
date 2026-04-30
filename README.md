@@ -1,6 +1,6 @@
-# SmolVLA / Pi0 Dataset + Training Utilities
+# SmolVLA / Pi0 / ACT Dataset + Training Utilities
 
-Unified pipeline for collecting, labeling, converting, and training robot demonstration data with SmolVLA, Pi0, or Pi0.5 policies.
+Unified pipeline for collecting, labeling, converting, and training robot demonstration data with SmolVLA, Pi0, Pi0.5, or ACT policies.
 
 ## Project Layout
 
@@ -17,10 +17,12 @@ Industrial-Project/
       create_labels.py
       merge_datasets.py
       smolvla_franka_setup.py
+      train_act.py
       train_pi0.py
       patch_frame_tolerance.py
       patch_nvenc.py
       patch_task_none.py
+    train_act_standalone.py ← standalone ACT training script
     scripts/            ← bash scripts for batch ops and GPU cluster workflows
       convert_all.sh
       restart_conversion.sh
@@ -46,6 +48,7 @@ SmolVLA-Testing/
   outputs/<name>_smolvla/       ← output of  main.py train --model-type smolvla
   outputs/<name>_pi0/           ← output of  main.py train --model-type pi0
   outputs/<name>_pi05/          ← output of  main.py train --model-type pi05
+  outputs/<name>_act/           ← output of  main.py train --model-type act
 ```
 
 ## Installation
@@ -61,7 +64,10 @@ uv pip install -e ".[smolvla]"
 # Pi0 / Pi0.5 (adds transformers PaliGemma support)
 uv pip install -e ".[pi0]"
 
-# Both
+# ACT / base LeRobot install
+uv pip install -e "."
+
+# Both SmolVLA and Pi0/Pi0.5 extras
 uv pip install -e ".[smolvla,pi0]"
 ```
 
@@ -87,10 +93,10 @@ uv --project ../lerobot run python main.py label
 # 3. Convert to LeRobotDataset v3
 uv --project ../lerobot run python main.py convert <dataset_name> --primary-camera <camera_name>
 
-# 4. Train  (SmolVLA is the default; pass --model-type pi0 or --model-type pi05 to switch)
+# 4. Train  (SmolVLA is the default; pass --model-type pi0, pi05, or act to switch)
 uv --project ../lerobot run python main.py train \
   --dataset-root lerobot_datasets/<dataset_name> \
-  [--model-type smolvla|pi0|pi05]
+  [--model-type smolvla|pi0|pi05|act]
 ```
 
 Example end-to-end for a dataset called `socket` with dual ZED Mini + third-person cameras:
@@ -113,6 +119,15 @@ uv --project ../lerobot run python main.py train \
   --model-type pi0 \
   --steps 20000 \
   --batch-size 4
+
+# ACT
+uv --project ../lerobot run python main.py train \
+  --dataset-root lerobot_datasets/socket \
+  --model-type act \
+  --chunk-size 100 \
+  --vision-backbone resnet18 \
+  --steps 20000 \
+  --batch-size 8
 ```
 
 ## Command Reference
@@ -190,7 +205,7 @@ uv --project ../lerobot run python main.py train --dataset-root <path> [options]
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--model-type` | `smolvla` | Policy architecture: `smolvla`, `pi0`, or `pi05` |
+| `--model-type` | `smolvla` | Policy architecture: `smolvla`, `pi0`, `pi05`, or `act` |
 | `--dataset-root` | *(required)* | Local LeRobotDataset v3 export directory |
 | `--lerobot-root` | *(auto-detected)* | Path to local lerobot clone |
 | `--policy-path` | *(model default)* | Pretrained checkpoint or HF model id |
@@ -217,6 +232,7 @@ uv --project ../lerobot run python main.py train --dataset-root <path> [options]
 | `smolvla` | `lerobot/smolvla_base` |
 | `pi0` | `lerobot/pi0_base` |
 | `pi05` | `lerobot/pi05_base` |
+| `act` | `lerobot/act_base` |
 
 **Pi0 / Pi0.5 only options** (ignored for `smolvla`):
 
@@ -228,6 +244,97 @@ uv --project ../lerobot run python main.py train --dataset-root <path> [options]
 | `--dtype` | `float32` | Model weight dtype: `float32` or `bfloat16` |
 
 > **VRAM guidance:** Pi0 and Pi0.5 use a PaliGemma 2B backbone (~20–24 GB in `float32` for a full fine-tune). Use `--dtype bfloat16` and/or `--gradient-checkpointing` if VRAM-constrained. SmolVLA uses a 500M backbone and fits comfortably in 16 GB.
+
+**ACT only options** (ignored for SmolVLA / Pi0 / Pi0.5):
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--chunk-size` | `100` | Number of future action steps predicted per forward pass |
+| `--n-obs-steps` | `1` | Number of observation steps used as input |
+| `--vision-backbone` | `resnet18` | ResNet image encoder: `resnet18`, `resnet34`, or `resnet50` |
+| `--use-vae` | enabled | Enable ACT's VAE action modeling component |
+| `--no-vae` | — | Disable the VAE for simpler/faster training |
+
+ACT is a smaller transformer imitation-learning policy that predicts chunks of actions from visual observations and robot state. It is often faster to train and run than VLM-based policies, and is a good fit for longer manipulation sequences where chunked actions help smooth execution.
+
+| Aspect | SmolVLA | ACT |
+|--------|---------|-----|
+| Vision model | SmolVLM2-500M | ResNet18/34/50 |
+| Approx. size | 500M+ parameters | 10–25M parameters |
+| Action prediction | Single action step | Multi-step action chunks |
+| Training speed | Medium | Fast |
+| Best fit | Language-conditioned or short-horizon tasks | Fast long-horizon imitation learning |
+
+Common ACT configurations:
+
+```bash
+# Quick experiment
+uv --project ../lerobot run python main.py train \
+  --model-type act \
+  --dataset-root lerobot_datasets/001 \
+  --chunk-size 50 \
+  --batch-size 16 \
+  --steps 5000 \
+  --use-amp
+
+# Higher-capacity training
+uv --project ../lerobot run python main.py train \
+  --model-type act \
+  --dataset-root lerobot_datasets/001 \
+  --vision-backbone resnet50 \
+  --chunk-size 100 \
+  --batch-size 8 \
+  --steps 50000 \
+  --seed 42
+
+# Limited VRAM
+uv --project ../lerobot run python main.py train \
+  --model-type act \
+  --dataset-root lerobot_datasets/001 \
+  --vision-backbone resnet18 \
+  --chunk-size 50 \
+  --batch-size 2 \
+  --num-workers 2 \
+  --use-amp
+```
+
+### Standalone ACT Training
+
+For ACT-only experimentation, `train_act_standalone.py` exposes a smaller standalone CLI with an additional `--learning-rate` option:
+
+```bash
+uv --project ../lerobot run python train_act_standalone.py \
+  --dataset-root lerobot_datasets/001 \
+  --output-dir outputs/act_experiment \
+  --learning-rate 5e-5 \
+  --vision-backbone resnet50 \
+  --chunk-size 100 \
+  --batch-size 8 \
+  --steps 20000 \
+  --use-amp
+```
+
+ACT checkpoints are written under `outputs/<dataset>_act/` by default. The useful artifacts are usually:
+
+```text
+outputs/<dataset>_act/
+  train_config.json
+  checkpoint_*/              ← intermediate checkpoints
+  latest_checkpoint/         ← most recent checkpoint
+    config.json
+    policy_state_dict.pt
+    preprocessor/
+    postprocessor/
+```
+
+Quick ACT troubleshooting:
+
+| Problem | Try |
+|---------|-----|
+| CUDA out of memory | Reduce `--batch-size`, use `--vision-backbone resnet18`, reduce `--chunk-size`, and enable `--use-amp` |
+| Slow training | Use `resnet18`, enable `--use-amp`, or reduce `--num-workers` if loading is unstable |
+| Poor loss | Inspect episodes with `main.py label`, train longer, try `resnet50`, or disable VAE with `--no-vae` |
+| Weak generalization | Add more varied demonstrations, train longer, or increase backbone capacity |
 
 ## Utilities
 
