@@ -565,7 +565,7 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         help="Deprecated alias for --cleaned-root.",
     )
-    parser.add_argument("--port", type=int, default=5000)
+    parser.add_argument("--port", type=int, default=3001)
     parser.add_argument("--no-browser", action="store_true", help="Don't auto-open the browser.")
     return parser.parse_args()
 

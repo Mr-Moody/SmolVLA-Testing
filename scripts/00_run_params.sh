@@ -13,11 +13,16 @@ WORKFLOW_USER="your_ucl_username"
 REMOTE_PROJECT_DIRNAME="smolvla_project"
 
 # -------- Core run controls --------
-RUN_NAME="001_002_003"
-DATASET_NAMES=(001 002 003)
+RUN_NAME="test_100"
+DATASET_NAMES=(100)
 DATASET_ROOT="/scratch0/${WORKFLOW_USER}/lerobot_datasets"
 SAVE_FREQ=1000
 
+# -------- Preprocessing controls --------
+# If true, convert cleaned_datasets -> lerobot_datasets on GPU right before training.
+PREPROCESS_ON_GPU=false
+REMOTE_CLEANED_DATASET_ROOT="/scratch0/${WORKFLOW_USER}/cleaned_datasets"
+PREPROCESS_VCODEC="h264_nvenc"
 # -------- Training hyperparameters --------
 STEPS=20000
 BATCH_SIZE=8
