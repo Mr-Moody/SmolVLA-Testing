@@ -29,6 +29,8 @@ REMOTE_PROJECT_DIRNAME="smolvla_project"
 RUN_NAME="001_002_003"
 DATASET_NAMES=(001 002 003)
 DATASET_ROOT="/scratch0/${WORKFLOW_USER}/lerobot_datasets"
+PREPROCESS_ON_GPU=true
+REMOTE_CLEANED_DATASET_ROOT="/scratch0/${WORKFLOW_USER}/cleaned_datasets"
 SAVE_FREQ=1000
 EXTRACT_FOLDER_NAME="${RUN_NAME}_smolvla_full"
 ```
@@ -52,9 +54,14 @@ bash scripts/01_sync_to_gpu.sh
 bash scripts/02_preflight_gpu.sh
 ```
 
+Preflight note:
+- If this is the first run on a fresh GPU booking, missing `/scratch0/<user>/activate_smolvla.sh` is reported as a warning (not a failure).
+- Generate it by running `scripts/03_setup_gpu.sh` on the GPU node.
+
 What `01_sync_to_gpu.sh` does:
 - code -> remote home project (`~/smolvla_project/SmolVLA-Testing`)
-- converted dataset -> remote scratch (`/scratch0/<user>/lerobot_datasets`)
+- if `PREPROCESS_ON_GPU=true`: cleaned datasets -> remote scratch (`/scratch0/<user>/cleaned_datasets`)
+- if `PREPROCESS_ON_GPU=false`: converted datasets -> remote scratch (`/scratch0/<user>/lerobot_datasets`)
 
 ## 3) Connect to GPU
 You can use values from params directly:
@@ -76,6 +83,13 @@ cd ~/smolvla_project/SmolVLA-Testing/scripts
 bash ./03_setup_gpu.sh
 bash ./04_start_training.sh
 ```
+
+When `PREPROCESS_ON_GPU=true`, `04_start_training.sh` first converts each
+dataset listed in `DATASET_NAMES` from `REMOTE_CLEANED_DATASET_ROOT` into
+`DATASET_ROOT`, then launches training.
+
+If `PREPROCESS_VCODEC=h264_nvenc` fails because NVENC is unavailable, the script
+automatically retries preprocessing with `h264`.
 
 Resume mode:
 ```bash

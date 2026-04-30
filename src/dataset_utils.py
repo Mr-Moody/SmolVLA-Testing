@@ -168,6 +168,38 @@ def load_annotations(dataset_dir: Path) -> dict[int, str]:
     return result
 
 
+def load_trims(dataset_dir: Path) -> dict[int, dict[str, float]]:
+    """Load episode-index → trim bounds from trims.jsonl."""
+    path = dataset_dir / "trims.jsonl"
+    if not path.exists():
+        return {}
+    result: dict[int, dict[str, float]] = {}
+    for row in read_jsonl(path):
+        if "episode_index" not in row:
+            continue
+        result[int(row["episode_index"])] = {
+            "trim_start_s": float(row.get("trim_start_s", 0.0)),
+            "trim_end_s": float(row.get("trim_end_s", 0.0)),
+        }
+    return result
+
+
+def load_subtasks(dataset_dir: Path) -> dict[int, list[dict[str, Any]]]:
+    """Load subtask phases from subtasks.jsonl → {episode_index: [phase_dicts]}."""
+    path = dataset_dir / "subtasks.jsonl"
+    if not path.exists():
+        return {}
+    result: dict[int, list[dict[str, Any]]] = {}
+    for row in read_jsonl(path):
+        idx = row.get("episode_index")
+        if idx is None:
+            continue
+        phases = row.get("subtasks", [])
+        if isinstance(phases, list):
+            result[int(idx)] = phases
+    return result
+
+
 def save_annotation(dataset_dir: Path, episode_index: int, task: str) -> None:
     """Write/update annotation for one episode in annotations.jsonl (last write wins per episode)."""
     import datetime
@@ -189,18 +221,98 @@ def find_episode_boundaries(
     robot_rows: list[dict[str, Any]],
     episode_rows: list[dict[str, Any]],
 ) -> list[tuple[int, int]]:
-    """Return (start_idx, end_idx) slices into robot_rows for each episode."""
+    """Return (start_idx, end_idx) slices into robot_rows for each episode.
+
+    When episode_rows contains paired episode_start / episode_end events (e.g.
+    50 events → 25 episodes), each pair defines one episode window and the
+    robot rows between them are returned.
+
+    When only start events are present (the format produced by data_cleaner.py
+    for cleaned datasets), the function falls back to treating consecutive
+    episode_start timestamps as split points — preserving existing behaviour.
+    """
+    _START_EVENTS = {"episode_start"}
+    _END_EVENTS = {"episode_end", "episode_stop", "episode_finish", "episode_finished"}
+    _ALL_EVENTS = _START_EVENTS | _END_EVENTS
+
     robot_times = [infer_timestamp_ns(row) for row in robot_rows]
     if not robot_times:
         return []
-    split_indices: set[int] = {0, len(robot_times)}
+
+    # Collect and sort relevant events by their robot timestamp.
+    events: list[tuple[int, str]] = []
     for row in episode_rows:
-        event_name = _normalize_event_name(row)
-        if event_name not in {"episode_start", "episode_end", "episode_stop", "episode_finish", "episode_finished"}:
+        name = _normalize_event_name(row)
+        if name not in _ALL_EVENTS:
             continue
         if row.get("robot_timestamp_ns") is None:
             continue
-        split_indices.add(bisect_left(robot_times, int(row["robot_timestamp_ns"])))
+        events.append((int(row["robot_timestamp_ns"]), name))
+    events.sort(key=lambda e: e[0])
+
+    if not events:
+        return [(0, len(robot_times))]
+
+    has_starts = any(name in _START_EVENTS for _, name in events)
+    has_ends = any(name in _END_EVENTS for _, name in events)
+
+    # ── Paired start/end mode ─────────────────────────────────────────────
+    # Used when raw data has explicit start+end events per episode.
+    # e.g. 50 events (25 start + 25 end) → 25 episodes.
+    if has_starts and has_ends:
+        # Walk events in time order, pairing each start with the next end.
+        # (start_ts, end_ts, end_is_inclusive):
+        #   end_inclusive=True  → explicit episode_end; include the nearest robot row
+        #   end_inclusive=False → implicit end (next start arrived before any end);
+        #                         exclude the row at next_start_ts
+        pairs: list[tuple[int, int, bool]] = []
+        current_start: int | None = None
+
+        for ts, name in events:
+            if name in _START_EVENTS:
+                if current_start is not None:
+                    # Consecutive starts: implicitly close the previous episode
+                    # just before this new start timestamp.
+                    pairs.append((current_start, ts, False))
+                current_start = ts
+            else:  # end event
+                if current_start is not None:
+                    pairs.append((current_start, ts, True))
+                    current_start = None
+                # end event with no preceding start → ignore
+
+        if current_start is not None:
+            # Last episode has no explicit end: extend to the final robot row.
+            pairs.append((current_start, robot_times[-1], True))
+
+        boundaries: list[tuple[int, int]] = []
+        for start_ts, end_ts, end_inclusive in pairs:
+            start_idx = bisect_left(robot_times, start_ts)
+            if end_inclusive:
+                # Find the robot row nearest to end_ts and make it inclusive.
+                pos = bisect_left(robot_times, end_ts)
+                if pos >= len(robot_times):
+                    end_idx = len(robot_times)
+                elif pos == 0:
+                    end_idx = 1
+                elif (robot_times[pos] - end_ts) <= (end_ts - robot_times[pos - 1]):
+                    end_idx = pos + 1
+                else:
+                    end_idx = pos  # pos-1 is closer; exclusive end that includes it
+            else:
+                # Implicit end: stop before the row at end_ts (next episode's start).
+                end_idx = bisect_left(robot_times, end_ts)
+            if end_idx > start_idx:
+                boundaries.append((start_idx, end_idx))
+
+        return boundaries or [(0, len(robot_times))]
+
+    # ── Fallback: split-at-every-event ───────────────────────────────────
+    # Used for cleaned datasets that carry only episode_start markers, or
+    # raw datasets that only have end markers.
+    split_indices: set[int] = {0, len(robot_times)}
+    for ts, _ in events:
+        split_indices.add(bisect_left(robot_times, ts))
     sorted_splits = sorted(split_indices)
     boundaries = [(s, e) for s, e in zip(sorted_splits[:-1], sorted_splits[1:]) if e > s]
     return boundaries or [(0, len(robot_times))]

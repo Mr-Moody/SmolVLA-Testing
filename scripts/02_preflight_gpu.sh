@@ -15,6 +15,10 @@ pass() {
   echo "[PASS] $*"
 }
 
+warn() {
+  echo "[WARN] $*"
+}
+
 fail() {
   echo "[FAIL] $*"
   FAILED=1
@@ -37,9 +41,17 @@ echo ""
 
 echo "[1/4] Local prerequisites"
 require_local_dir "${LOCAL_PROJECT_ROOT}" "Local project root"
-require_local_dir "${LOCAL_DATA_PULL_SOURCE}" "Local converted dataset root"
+if [[ "${PREPROCESS_ON_GPU}" == "true" ]]; then
+  require_local_dir "${LOCAL_CLEANED_DATA_SOURCE}" "Local cleaned dataset root"
+else
+  require_local_dir "${LOCAL_DATA_PULL_SOURCE}" "Local converted dataset root"
+fi
 for ds in "${DATASET_NAMES[@]}"; do
-  require_local_dir "${LOCAL_DATA_PULL_SOURCE}/${ds}" "Local dataset ${ds}"
+  if [[ "${PREPROCESS_ON_GPU}" == "true" ]]; then
+    require_local_dir "${LOCAL_CLEANED_DATA_SOURCE}/${ds}" "Local cleaned dataset ${ds}"
+  else
+    require_local_dir "${LOCAL_DATA_PULL_SOURCE}/${ds}" "Local dataset ${ds}"
+  fi
 done
 
 echo ""
@@ -61,7 +73,7 @@ if [[ -n "${REMOTE_HOME_DIR}" ]]; then
   REMOTE_CODE_DIR="${REMOTE_HOME_PROJECT}/SmolVLA-Testing"
   DATASET_NAMES_STR="${DATASET_NAMES[*]}"
 
-  remote_checks_output="$(ssh -o ConnectTimeout="${CHECK_TIMEOUT}" -J "${SSH_JUMP}" "${SSH_REMOTE}" bash -s -- "${REMOTE_HOME_PROJECT}" "${REMOTE_LEROBOT_DIR}" "${REMOTE_CODE_DIR}" "${REMOTE_SCRATCH_BASE}" "${DATASET_ROOT}" "${DATASET_NAMES_STR}" <<'EOS'
+  remote_checks_output="$(ssh -o ConnectTimeout="${CHECK_TIMEOUT}" -J "${SSH_JUMP}" "${SSH_REMOTE}" bash -s -- "${REMOTE_HOME_PROJECT}" "${REMOTE_LEROBOT_DIR}" "${REMOTE_CODE_DIR}" "${REMOTE_SCRATCH_BASE}" "${DATASET_ROOT}" "${REMOTE_CLEANED_DATASET_ROOT}" "${PREPROCESS_ON_GPU}" "${DATASET_NAMES_STR}" <<'EOS'
 set -u
 status=0
 home_project="$1"
@@ -69,7 +81,9 @@ lerobot="$2"
 code="$3"
 scratch="$4"
 data_root="$5"
-datasets="$6"
+cleaned_root="$6"
+preprocess_on_gpu="$7"
+datasets="$8"
 
 check_dir() {
   label="$1"
@@ -88,8 +102,7 @@ check_file() {
   if [[ -f "$path" ]]; then
     echo "[PASS] $label: $path"
   else
-    echo "[FAIL] $label missing on remote: $path"
-    status=1
+    echo "[WARN] $label missing on remote: $path"
   fi
 }
 
@@ -97,14 +110,23 @@ check_dir "Remote home project" "$home_project"
 check_dir "Remote lerobot" "$lerobot"
 check_dir "Remote SmolVLA-Testing code" "$code"
 check_dir "Remote scratch base" "$scratch"
-check_dir "Remote dataset root" "$data_root"
-
-for ds in $datasets; do
-  check_dir "Remote dataset $ds" "$data_root/$ds/meta"
-done
+if [[ "$preprocess_on_gpu" == "true" ]]; then
+  check_dir "Remote cleaned dataset root" "$cleaned_root"
+  for ds in $datasets; do
+    check_dir "Remote cleaned dataset $ds" "$cleaned_root/$ds"
+  done
+else
+  check_dir "Remote dataset root" "$data_root"
+  for ds in $datasets; do
+    check_dir "Remote dataset $ds" "$data_root/$ds/meta"
+  done
+fi
 
 echo "[4/4] Training readiness"
 check_file "Scratch activation shim exists (setup complete)" "$scratch/activate_smolvla.sh"
+if [[ ! -f "$scratch/activate_smolvla.sh" ]]; then
+  echo "[WARN] This is expected before first setup; run scripts/03_setup_gpu.sh on the GPU node."
+fi
 
 if [[ -w "$scratch" ]]; then
   echo "[PASS] Scratch is writable: $scratch"

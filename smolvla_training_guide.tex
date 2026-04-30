@@ -49,6 +49,8 @@ REMOTE_PROJECT_DIRNAME="smolvla_project"
 RUN_NAME="001_002_003"
 DATASET_NAMES=(001 002 003)
 DATASET_ROOT="/scratch0/${WORKFLOW_USER}/lerobot_datasets"
+PREPROCESS_ON_GPU=true
+REMOTE_CLEANED_DATASET_ROOT="/scratch0/${WORKFLOW_USER}/cleaned_datasets"
 SAVE_FREQ=1000
 EXTRACT_FOLDER_NAME="${RUN_NAME}_smolvla_full"
 \end{lstlisting}
@@ -66,6 +68,11 @@ $EDITOR scripts/00_run_params.local.sh
 bash scripts/01_sync_to_gpu.sh
 bash scripts/02_preflight_gpu.sh
 \end{lstlisting}
+
+Preflight note: on a fresh booking, a missing
+\texttt{/scratch0/<user>/activate\_smolvla.sh} is expected before setup and
+is reported as a warning. Run \texttt{scripts/03\_setup\_gpu.sh} on the GPU
+node to generate it.
 
 \section{3) Connect to GPU}
 \begin{lstlisting}[language=bash]
@@ -86,6 +93,14 @@ cd ~/smolvla_project/SmolVLA-Testing/scripts
 bash ./03_setup_gpu.sh
 bash ./04_start_training.sh
 \end{lstlisting}
+
+If \texttt{PREPROCESS\_ON\_GPU=true}, \texttt{04\_start\_training.sh} first
+converts datasets listed in \texttt{DATASET\_NAMES} from
+\texttt{REMOTE\_CLEANED\_DATASET\_ROOT} into \texttt{DATASET\_ROOT}, then
+launches training.
+
+If \texttt{PREPROCESS\_VCODEC=h264\_nvenc} fails (NVENC unavailable), the
+script automatically retries preprocessing with \texttt{h264}.
 
 Resume mode:
 \begin{lstlisting}[language=bash]

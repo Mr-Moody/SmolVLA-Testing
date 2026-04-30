@@ -23,13 +23,18 @@ Run data_converter.py on the output to produce a LeRobotDataset v3 export.
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import shutil
 from pathlib import Path
 from typing import Any
 
+import sys as _sys
+_sys.path.insert(0, str(Path(__file__).parent))
+
 import torch
 
+from create_labels import generate_prompts
 from dataset_utils import (
     DEFAULT_CAMERA_TOLERANCE_NS,
     find_episode_boundaries,
@@ -62,6 +67,7 @@ class DatasetCleaner:
         gripper_motion_threshold: float = DEFAULT_GRIPPER_MOTION_THRESHOLD,
         action_translation_threshold: float = DEFAULT_ACTION_TRANSLATION_THRESHOLD,
         action_rotation_threshold: float = DEFAULT_ACTION_ROTATION_THRESHOLD,
+        generate_tasks: bool = False,
     ) -> None:
         self.dataset_dir = dataset_dir
         self.output_dir = output_dir
@@ -72,6 +78,7 @@ class DatasetCleaner:
         self.gripper_motion_threshold = float(gripper_motion_threshold)
         self.action_translation_threshold = float(action_translation_threshold)
         self.action_rotation_threshold = float(action_rotation_threshold)
+        self.generate_tasks = generate_tasks
 
         self._device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         LOGGER.info("Device: %s", self._device)
@@ -257,6 +264,16 @@ class DatasetCleaner:
 
         write_jsonl(self.output_dir / "robot.jsonl", kept_rows)
         write_jsonl(self.output_dir / "episode_events.jsonl", episode_events)
+
+        if self.generate_tasks and episode_events:
+            num_kept = len(episode_events)
+            prompts = generate_prompts(num_kept)
+            annotations_path = self.output_dir / "annotations.jsonl"
+            with annotations_path.open("w", encoding="utf-8") as fh:
+                for ep_idx, task in enumerate(prompts):
+                    fh.write(json.dumps({"episode_index": ep_idx, "task": task}) + "\n")
+            LOGGER.info("Generated %d task annotation(s) → %s", num_kept, annotations_path)
+
         shutil.copy2(self.dataset_dir / "session_metadata.json", self.output_dir / "session_metadata.json")
 
         for text_name in ("text.jsonl", "language.jsonl"):
@@ -307,6 +324,10 @@ def parse_args() -> argparse.Namespace:
         "--action-rotation-threshold", type=float, default=DEFAULT_ACTION_ROTATION_THRESHOLD,
         help="Min cartesian_delta_rotation norm considered movement.",
     )
+    parser.add_argument(
+        "--generate-tasks", action="store_true",
+        help="Auto-assign a unique global task prompt to each kept episode and write annotations.jsonl.",
+    )
     return parser.parse_args()
 
 
@@ -326,6 +347,7 @@ def main() -> None:
         gripper_motion_threshold=args.gripper_motion_threshold,
         action_translation_threshold=args.action_translation_threshold,
         action_rotation_threshold=args.action_rotation_threshold,
+        generate_tasks=args.generate_tasks,
     )
     cleaner.clean()
 

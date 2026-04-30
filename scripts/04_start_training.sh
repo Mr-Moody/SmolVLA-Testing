@@ -16,10 +16,27 @@ fi
 
 SCRATCH_OUTPUT_DIR="${REMOTE_SCRATCH_BASE}/smolvla_outputs/${RUN_NAME}_smolvla"
 LOG_FILE="${REMOTE_SCRATCH_BASE}/smolvla_outputs/${RUN_NAME}.log"
+PREPROCESS_LOG_DIR="${REMOTE_SCRATCH_BASE}/smolvla_outputs/preprocess_logs/${RUN_NAME}"
 POLICY_PATH="lerobot/smolvla_base"
 ACTIVATE_SHIM="${REMOTE_SCRATCH_BASE}/activate_smolvla.sh"
 
 mkdir -p "${REMOTE_SCRATCH_BASE}/smolvla_outputs"
+mkdir -p "${PREPROCESS_LOG_DIR}"
+
+run_preprocess_job() {
+  local ds="$1"
+  local codec="$2"
+  local log_path="$3"
+
+  nohup bash -c "source '${ACTIVATE_SHIM}'; cd '${LEROBOT_DIR}' && uv run python '${CODE_DIR}/src/data_converter.py' '${ds}' \
+    --datasets-root '${REMOTE_CLEANED_DATASET_ROOT}' \
+    --output-root '${DATASET_ROOT}' \
+    --vcodec '${codec}' \
+    --force" >> "${log_path}" 2>&1 &
+  local preprocess_pid=$!
+  echo "  PID=${preprocess_pid}  log=${log_path}"
+  wait "${preprocess_pid}"
+}
 
 if [[ ! -f "${ACTIVATE_SHIM}" ]]; then
   echo "ERROR: Missing ${ACTIVATE_SHIM}. Run 03_setup_gpu.sh first."
@@ -34,6 +51,43 @@ fi
 if [[ ! -d "${CODE_DIR}" ]]; then
   echo "ERROR: code dir not found at ${CODE_DIR}"
   exit 1
+fi
+
+if [[ "${PREPROCESS_ON_GPU}" == "true" ]]; then
+  echo "GPU preprocessing enabled: converting cleaned datasets before training..."
+  if [[ ! -d "${REMOTE_CLEANED_DATASET_ROOT}" ]]; then
+    echo "ERROR: cleaned dataset root not found at ${REMOTE_CLEANED_DATASET_ROOT}"
+    exit 1
+  fi
+
+  source "${ACTIVATE_SHIM}"
+  for ds in "${DATASET_NAMES[@]}"; do
+    if [[ ! -d "${REMOTE_CLEANED_DATASET_ROOT}/${ds}" ]]; then
+      echo "ERROR: cleaned dataset ${ds} missing at ${REMOTE_CLEANED_DATASET_ROOT}/${ds}"
+      exit 1
+    fi
+
+    PREPROCESS_LOG_FILE="${PREPROCESS_LOG_DIR}/${ds}.log"
+    : > "${PREPROCESS_LOG_FILE}"
+
+    echo "Preprocessing dataset ${ds} on GPU with vcodec=${PREPROCESS_VCODEC} (nohup)..."
+    if ! run_preprocess_job "${ds}" "${PREPROCESS_VCODEC}" "${PREPROCESS_LOG_FILE}"; then
+      if [[ "${PREPROCESS_VCODEC}" == "h264_nvenc" ]]; then
+        echo "WARN: NVENC preprocessing failed for ${ds}; retrying with software codec h264..."
+        if ! run_preprocess_job "${ds}" "h264" "${PREPROCESS_LOG_FILE}"; then
+          echo "ERROR: preprocessing failed for ${ds} with fallback codec h264"
+          echo "See log: ${PREPROCESS_LOG_FILE}"
+          exit 1
+        fi
+      else
+        echo "ERROR: preprocessing failed for ${ds} with vcodec=${PREPROCESS_VCODEC}"
+        echo "See log: ${PREPROCESS_LOG_FILE}"
+        exit 1
+      fi
+    fi
+
+    echo "Preprocessing finished for ${ds}. Log: ${PREPROCESS_LOG_FILE}"
+  done
 fi
 
 DATASET_PATHS=()
@@ -51,7 +105,7 @@ if [[ "${#DATASET_PATHS[@]}" -gt 1 ]]; then
   MERGED_DATASET_ROOT="${DATASET_ROOT}/merged_${RUN_NAME}"
   echo "Merging datasets into ${MERGED_DATASET_ROOT}..."
   source "${ACTIVATE_SHIM}"
-  cd "${LEROBOT_DIR}" && uv run python "${CODE_DIR}/merge_datasets.py" \
+  cd "${LEROBOT_DIR}" && uv run python "${CODE_DIR}/src/merge_datasets.py" \
     "${DATASET_PATHS[@]}" \
     --output "${MERGED_DATASET_ROOT}" \
     --force
@@ -65,11 +119,11 @@ if [[ -d "${SCRATCH_OUTPUT_DIR}/checkpoints" ]] && [[ -n "$(ls -A "${SCRATCH_OUT
 fi
 
 if [[ "${ALLOW_NEAREST_FRAME_FALLBACK}" == "true" ]]; then
-  python "${CODE_DIR}/patch_frame_tolerance.py"
+  python "${CODE_DIR}/src/patch_frame_tolerance.py"
 fi
 
 if [[ "${ALLOW_MISSING_TASK_FALLBACK}" == "true" ]]; then
-  python "${CODE_DIR}/patch_task_none.py"
+  python "${CODE_DIR}/src/patch_task_none.py"
 fi
 
 RESUME_FLAG=""
@@ -82,7 +136,7 @@ if [[ "${USE_AMP}" == "true" ]]; then
   AMP_FLAG="--use-amp"
 fi
 
-TRAIN_CMD="cd ${LEROBOT_DIR} && uv run python ${CODE_DIR}/main.py \
+TRAIN_CMD="cd ${LEROBOT_DIR} && uv run python ${CODE_DIR}/main.py train \
   --dataset-root ${TRAIN_DATASET_ROOT} \
   --lerobot-root ${LEROBOT_DIR} \
   --policy-path ${POLICY_PATH} \
@@ -102,7 +156,7 @@ echo "Launching training with nohup..."
 echo "Run name: ${RUN_NAME}"
 echo "Log file: ${LOG_FILE}"
 
-nohup bash -c "source '${ACTIVATE_SHIM}'; ${TRAIN_CMD}" >> "${LOG_FILE}" 2>&1 &
+nohup bash -c "source '${ACTIVATE_SHIM}'; export HF_HUB_OFFLINE=1; ${TRAIN_CMD}" >> "${LOG_FILE}" 2>&1 &
 TRAIN_PID=$!
 
 echo "Training started. PID=${TRAIN_PID}"
