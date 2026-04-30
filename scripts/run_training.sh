@@ -215,7 +215,7 @@ if [[ "${#DATASET_NAMES[@]}" -gt 1 ]]; then
 
     source "${SCRATCH_BASE}/activate_smolvla.sh"
 
-    cd "${LEROBOT_ROOT}" && uv run python "${SMOLVLA_REPO}/merge_datasets.py" \
+    cd "${LEROBOT_ROOT}" && uv run python "${SMOLVLA_REPO}/src/merge_datasets.py" \
         "${DATASET_PATHS[@]}" \
         --output "${MERGED_DATASET_ROOT}" \
         --force
@@ -266,7 +266,7 @@ mkdir -p "${RESCUE_DIR}"
 
 if [[ "${ALLOW_NEAREST_FRAME_FALLBACK}" == "true" ]]; then
     echo "Applying nearest-frame fallback patch (experimental)..."
-    if ! python "${SMOLVLA_REPO}/patch_frame_tolerance.py"; then
+    if ! python "${SMOLVLA_REPO}/src/patch_frame_tolerance.py"; then
         echo "ERROR: Failed to patch lerobot timestamp tolerance behavior."
         echo "Set ALLOW_NEAREST_FRAME_FALLBACK=false to continue with strict decoding."
         exit 1
@@ -283,7 +283,7 @@ fi
 
 if [[ "${ALLOW_MISSING_TASK_FALLBACK}" == "true" ]]; then
     echo "Applying missing-task fallback patch (experimental)..."
-    if ! python "${SMOLVLA_REPO}/patch_task_none.py"; then
+    if ! python "${SMOLVLA_REPO}/src/patch_task_none.py"; then
         echo "ERROR: Failed to patch tokenizer missing-task behavior."
         echo "Set ALLOW_MISSING_TASK_FALLBACK=false to continue with strict task checks."
         exit 1
@@ -419,7 +419,7 @@ trap 'exit_code=$?; kill "${SYNC_PID}" 2>/dev/null || true; rescue_checkpoints "
 RESUME_FLAG=""
 [[ "${RESUME}" == "true" ]] && RESUME_FLAG="--resume"
 
-TRAIN_CMD="cd ${LEROBOT_ROOT} && uv run python ${SMOLVLA_REPO}/main.py \
+TRAIN_CMD="cd ${LEROBOT_ROOT} && uv run python ${SMOLVLA_REPO}/main.py train \
     --dataset-root ${TRAIN_DATASET_ROOT} \
     --lerobot-root ${LEROBOT_ROOT} \
     --policy-path ${POLICY_PATH} \

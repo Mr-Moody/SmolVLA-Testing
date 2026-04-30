@@ -47,10 +47,12 @@ from dataset_utils import (
 CLEANED_DATASETS_ROOT = Path("cleaned_datasets")
 RAW_DATASETS_ROOT = Path("raw_datasets")
 
+_PROJECT_ROOT = Path(__file__).parent.parent
+
 app = Flask(
     __name__,
-    template_folder="frontend/templates",
-    static_folder="frontend",
+    template_folder=str(_PROJECT_ROOT / "frontend" / "templates"),
+    static_folder=str(_PROJECT_ROOT / "frontend"),
     static_url_path="/static",
 )
 

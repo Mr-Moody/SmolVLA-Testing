@@ -28,7 +28,7 @@
 
 SCRATCH_BASE="/scratch0/${USER}"
 LOG_FILE="${SCRATCH_BASE}/conversion.log"
-CONVERT_SCRIPT="${HOME}/smolvla_project/SmolVLA-Testing/convert_all.sh"
+CONVERT_SCRIPT="${HOME}/smolvla_project/SmolVLA-Testing/scripts/convert_all.sh"
 
 # Stop any currently running conversion jobs
 echo "Stopping any existing conversion jobs..."

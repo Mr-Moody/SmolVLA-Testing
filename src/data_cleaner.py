@@ -29,6 +29,9 @@ import shutil
 from pathlib import Path
 from typing import Any
 
+import sys as _sys
+_sys.path.insert(0, str(Path(__file__).parent))
+
 import torch
 
 from create_labels import generate_prompts
