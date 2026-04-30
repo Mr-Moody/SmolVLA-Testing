@@ -115,7 +115,7 @@ for ds in "${DATASETS[@]}"; do
     echo "================================================================="
 
     uv run --project "${HOME}/smolvla_project/lerobot" \
-        python "${REPO_DIR}/data_converter.py" "${ds}" \
+        python "${REPO_DIR}/src/data_converter.py" "${ds}" \
         --datasets-root "${RAW_ROOT}" \
         --output-root "${OUTPUT_ROOT}" \
         --primary-camera "${PRIMARY_CAMERA}" \

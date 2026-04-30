@@ -28,7 +28,7 @@ run_preprocess_job() {
   local codec="$2"
   local log_path="$3"
 
-  nohup bash -c "source '${ACTIVATE_SHIM}'; cd '${LEROBOT_DIR}' && uv run python '${CODE_DIR}/data_converter.py' '${ds}' \
+  nohup bash -c "source '${ACTIVATE_SHIM}'; cd '${LEROBOT_DIR}' && uv run python '${CODE_DIR}/src/data_converter.py' '${ds}' \
     --datasets-root '${REMOTE_CLEANED_DATASET_ROOT}' \
     --output-root '${DATASET_ROOT}' \
     --vcodec '${codec}' \
@@ -105,7 +105,7 @@ if [[ "${#DATASET_PATHS[@]}" -gt 1 ]]; then
   MERGED_DATASET_ROOT="${DATASET_ROOT}/merged_${RUN_NAME}"
   echo "Merging datasets into ${MERGED_DATASET_ROOT}..."
   source "${ACTIVATE_SHIM}"
-  cd "${LEROBOT_DIR}" && uv run python "${CODE_DIR}/merge_datasets.py" \
+  cd "${LEROBOT_DIR}" && uv run python "${CODE_DIR}/src/merge_datasets.py" \
     "${DATASET_PATHS[@]}" \
     --output "${MERGED_DATASET_ROOT}" \
     --force
@@ -119,11 +119,11 @@ if [[ -d "${SCRATCH_OUTPUT_DIR}/checkpoints" ]] && [[ -n "$(ls -A "${SCRATCH_OUT
 fi
 
 if [[ "${ALLOW_NEAREST_FRAME_FALLBACK}" == "true" ]]; then
-  python "${CODE_DIR}/patch_frame_tolerance.py"
+  python "${CODE_DIR}/src/patch_frame_tolerance.py"
 fi
 
 if [[ "${ALLOW_MISSING_TASK_FALLBACK}" == "true" ]]; then
-  python "${CODE_DIR}/patch_task_none.py"
+  python "${CODE_DIR}/src/patch_task_none.py"
 fi
 
 RESUME_FLAG=""
@@ -136,7 +136,7 @@ if [[ "${USE_AMP}" == "true" ]]; then
   AMP_FLAG="--use-amp"
 fi
 
-TRAIN_CMD="cd ${LEROBOT_DIR} && uv run python ${CODE_DIR}/main.py \
+TRAIN_CMD="cd ${LEROBOT_DIR} && uv run python ${CODE_DIR}/src/main.py \
   --dataset-root ${TRAIN_DATASET_ROOT} \
   --lerobot-root ${LEROBOT_DIR} \
   --policy-path ${POLICY_PATH} \

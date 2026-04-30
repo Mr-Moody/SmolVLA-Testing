@@ -32,6 +32,9 @@ import torch
 from tqdm import tqdm
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
 
+import sys as _sys
+_sys.path.insert(0, str(Path(__file__).parent))
+
 from dataset_utils import (
     CameraFrame,
     TextRecord,
