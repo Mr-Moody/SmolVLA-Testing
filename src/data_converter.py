@@ -384,13 +384,10 @@ class SmolVLADatasetConverter:
     def _state_vector(self, row: dict[str, Any]) -> np.ndarray:
         rs = row["robot_state"]
         q   = [float(v) for v in rs.get("q", [])]
-        dq  = [float(v) for v in rs.get("dq", [])]
-        tcp_pos    = [float(v) for v in rs.get("tcp_position_xyz", [])]
-        tcp_orient = [float(v) for v in rs.get("tcp_orientation_xyzw", [])]
         gripper    = [float(rs.get("gripper_width", 0.0))]
-        state = q + dq + tcp_pos + tcp_orient + gripper
-        if not state:
+        if not q:
             raise KeyError("robot_state.q was missing; cannot build observation.state")
+        state = q + gripper
         return np.asarray(state, dtype=np.float32)
 
     def _state_dimension_names(self) -> list[str]:
@@ -398,18 +395,14 @@ class SmolVLADatasetConverter:
         rs = self.robot_rows[0]["robot_state"]
         names: list[str] = []
         names += [f"q_{i}"  for i in range(len(rs.get("q",  [])))]
-        names += [f"dq_{i}" for i in range(len(rs.get("dq", [])))]
-        names += ["tcp_x", "tcp_y", "tcp_z"][: len(rs.get("tcp_position_xyz", []))]
-        names += ["tcp_qx", "tcp_qy", "tcp_qz", "tcp_qw"][: len(rs.get("tcp_orientation_xyzw", []))]
         names += ["gripper_width"]
         return names
 
     def _action_dimension_names(self) -> list[str]:
-        """Build named action dimension list from the first robot row's actual field sizes."""
-        ea = self.robot_rows[0]["executed_action"]
+        """Build action dimension names for next joint targets plus gripper command."""
+        rs = self.robot_rows[0]["robot_state"]
         names: list[str] = []
-        names += ["delta_x", "delta_y", "delta_z"][: len(ea.get("cartesian_delta_translation", []))]
-        names += ["delta_rx", "delta_ry", "delta_rz"][: len(ea.get("cartesian_delta_rotation", []))]
+        names += [f"next_q_{i}" for i in range(len(rs.get("q", [])))]
         names += ["gripper_command"]
         return names
 
@@ -462,14 +455,12 @@ class SmolVLADatasetConverter:
                 details,
             )
 
-    def _action_vector(self, row: dict[str, Any]) -> np.ndarray:
-        ea = row["executed_action"]
-        translation = [float(v) for v in ea.get("cartesian_delta_translation", [])]
-        rotation    = [float(v) for v in ea.get("cartesian_delta_rotation", [])]
-        gripper     = [float(ea.get("gripper_command", 0.0))]
-        action = translation + rotation + gripper
-        if not action:
-            raise KeyError("executed_action was missing; cannot build action")
+    def _action_vector(self, row: dict[str, Any], next_row: dict[str, Any]) -> np.ndarray:
+        next_q = [float(v) for v in next_row["robot_state"].get("q", [])]
+        if not next_q:
+            raise KeyError("next robot_state.q was missing; cannot build action")
+        gripper = [float(row.get("executed_action", {}).get("gripper_command", 0.0))]
+        action = next_q + gripper
         return np.asarray(action, dtype=np.float32)
 
     def _episode_quality(self, steps: list[dict[str, Any]]) -> EpisodeQuality:
@@ -669,8 +660,17 @@ class SmolVLADatasetConverter:
             robot_slice = self._apply_episode_trim(episode_index, robot_slice)
             if self.max_steps_per_episode is not None:
                 robot_slice = robot_slice[: self.max_steps_per_episode]
+            if len(robot_slice) < 2:
+                LOGGER.warning(
+                    "Skipping episode %d: need at least 2 robot rows to build next-q action targets, got %d.",
+                    episode_index,
+                    len(robot_slice),
+                )
+                continue
 
-            step_timestamps = [infer_timestamp_ns(row) for row in robot_slice]
+            step_rows = robot_slice[:-1]
+            next_rows = robot_slice[1:]
+            step_timestamps = [infer_timestamp_ns(row) for row in step_rows]
 
             # Batch-match all camera frames for this episode in one GPU pass per camera.
             camera_frame_matches: dict[str, list[CameraFrame | None]] = {
@@ -681,7 +681,7 @@ class SmolVLADatasetConverter:
             steps: list[dict[str, Any]] = []
             matched_frames_by_camera: dict[str, list[CameraFrame]] = {name: [] for name in self.camera_frames}
 
-            for step_index, robot_row in enumerate(robot_slice):
+            for step_index, (robot_row, next_row) in enumerate(zip(step_rows, next_rows, strict=True)):
                 camera_matches: dict[str, CameraFrame] = {}
                 for camera_name in self.camera_frames:
                     matched_frame = camera_frame_matches[camera_name][step_index]
@@ -697,7 +697,7 @@ class SmolVLADatasetConverter:
                     "step_index": step_index,
                     "timestamp_ns": step_timestamps[step_index],
                     "observation.state": self._state_vector(robot_row),
-                    "action": self._action_vector(robot_row),
+                    "action": self._action_vector(robot_row, next_row),
                     "camera_matches": camera_matches,
                 })
 
