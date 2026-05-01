@@ -1,0 +1,21 @@
+# SmolVLA-FSM — forked SmolVLA with learned phase embedding.
+# Requires an annotated dataset (lerobot_datasets/<name>_annotated/).
+#
+# Invocation:
+#   python scripts/train_phase.py \\
+#       --config configs/training/smolvla_fsm.yaml \\
+#       --dataset-name <name>
+
+_base: configs/training/base.yaml
+
+model_type: smolvla_fork
+use_phase_conditioning: true
+phase_dropout_prob: 0.15
+phase_label_smoothing: 0.0   # increase to 0.1 if annotation boundaries are noisy
+
+# Dataset path — annotated dataset required
+dataset_path: "lerobot_datasets/${dataset_name}_annotated"
+
+output_dir: "outputs/${dataset_name}_smolvla_fsm"
+
+extra_train_args: []
