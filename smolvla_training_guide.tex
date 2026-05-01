@@ -4,6 +4,8 @@
 \usepackage[margin=1in]{geometry}
 \usepackage{listings}
 \usepackage{xcolor}
+\usepackage{booktabs}
+\usepackage{hyperref}
 
 \definecolor{codegray}{rgb}{0.96,0.96,0.96}
 \lstset{
@@ -14,7 +16,7 @@
     numbers=none
 }
 
-\title{SmolVLA Minimal Workflow (scripts folder)}
+\title{ACT / SmolVLA Training Workflow\\{\large scripts/ runbook}}
 \author{Shared Runbook}
 \date{\today}
 
@@ -22,112 +24,274 @@
 \maketitle
 
 \section*{Overview}
-All workflow scripts live in \texttt{scripts/} and are numbered in execution order.
+All workflow scripts live in \texttt{scripts/} and are numbered in execution
+order. The current default model is \textbf{ACT} (\texttt{MODEL\_TYPE="act"}).
+SmolVLA is also supported --- set \texttt{MODEL\_TYPE="smolvla"} in
+\texttt{00\_run\_params.sh}.
 
 \section{Script Order}
 \begin{enumerate}
-    \item \texttt{scripts/00\_run\_params.sh} (edit only)
-    \item \texttt{scripts/01\_sync\_to\_gpu.sh} (run locally)
-    \item \texttt{scripts/02\_preflight\_gpu.sh} (run locally, recommended)
-    \item \texttt{scripts/03\_setup\_gpu.sh} (run on GPU node)
-    \item \texttt{scripts/04\_start\_training.sh} (run on GPU node)
-    \item \texttt{scripts/05\_extract\_from\_scratch.sh} (run locally after training)
+    \item \texttt{scripts/00\_run\_params.sh} --- edit parameters (committed template)
+    \item \texttt{scripts/01\_sync\_to\_gpu.sh} --- run locally: sync code + datasets
+    \item \texttt{scripts/02\_preflight\_gpu.sh} --- run locally: sanity-check prerequisites
+    \item \texttt{scripts/03\_setup\_gpu.sh} --- run locally: bootstrap scratch env on GPU
+    \item \texttt{scripts/04\_start\_training.sh} --- run on GPU node: merge and launch
+    \item \texttt{scripts/05\_extract\_from\_scratch.sh} --- run locally: pull checkpoints
 \end{enumerate}
 
+\section{0) SSH Key Setup (one-time)}
+
+All scripts authenticate with an SSH key. Generate it once on your local machine:
+\begin{lstlisting}[language=bash]
+ssh-keygen -t ed25519 -f ~/.ssh/ucl_key -N ""
+\end{lstlisting}
+
+Install on the GPU node from an active password-based session on hotrod:
+\begin{lstlisting}[language=bash]
+mkdir -p ~/.ssh && chmod 700 ~/.ssh
+echo "$(cat ~/.ssh/ucl_key.pub)" >> ~/.ssh/authorized_keys
+chmod 600 ~/.ssh/authorized_keys
+\end{lstlisting}
+
+Add to \texttt{\textasciitilde/.ssh/config} on your local machine:
+\begin{lstlisting}
+Host ucl-knuckles
+    HostName knuckles.cs.ucl.ac.uk
+    User eredhead
+    IdentityFile ~/.ssh/ucl_key
+    IdentitiesOnly yes
+
+Host ucl-hotrod
+    HostName hotrod.cs.ucl.ac.uk
+    User eredhead
+    IdentityFile ~/.ssh/ucl_key
+    IdentitiesOnly yes
+    ProxyJump ucl-knuckles
+\end{lstlisting}
+
+The \texttt{SSH\_KEY\_FILE} variable in \texttt{00\_run\_params.sh} defaults to
+\texttt{\textasciitilde/.ssh/ucl\_key} and is used by all scripts automatically.
+
 \section{1) Edit Parameters}
-Edit the committed template \texttt{scripts/00\_run\_params.sh}, then create a local override:
+
+Edit the committed template \texttt{scripts/00\_run\_params.sh}. For personal
+overrides create a gitignored local file:
 \begin{lstlisting}[language=bash]
 cp scripts/00_run_params.local.example.sh scripts/00_run_params.local.sh
 \end{lstlisting}
 
-Use \texttt{scripts/00\_run\_params.local.sh} for personal values (gitignored).
-
-Key fields:
+Current key fields:
 \begin{lstlisting}[language=bash]
-WORKFLOW_USER="your_ucl_username"
-REMOTE_PROJECT_DIRNAME="smolvla_project"
-RUN_NAME="001_002_003"
-DATASET_NAMES=(001 002 003)
+WORKFLOW_USER="eredhead"
+
+MODEL_TYPE="act"           # smolvla | act
+RUN_NAME="test_100_101_102_103"
+DATASET_NAMES=(100 101 102 103)
 DATASET_ROOT="/scratch0/${WORKFLOW_USER}/lerobot_datasets"
-PREPROCESS_ON_GPU=true
-REMOTE_CLEANED_DATASET_ROOT="/scratch0/${WORKFLOW_USER}/cleaned_datasets"
 SAVE_FREQ=1000
-EXTRACT_FOLDER_NAME="${RUN_NAME}_smolvla_full"
+
+PREPROCESS_ON_GPU=false    # true = convert on GPU; false = sync pre-converted
+
+STEPS=100000
+BATCH_SIZE=4               # limited by 24 GiB VRAM with chunk_size=100
+NUM_WORKERS=4
+USE_AMP=true
+SEED=1000
+
+# ACT model parameters
+ACT_POLICY_PATH="lerobot/act_base"
+ACT_CHUNK_SIZE=100         # action steps predicted per forward pass
+ACT_N_OBS_STEPS=1
+ACT_USE_VAE=true
+ACT_VISION_BACKBONE="resnet18"  # resnet18 | resnet50
+
+# SmolVLA model parameters (used when MODEL_TYPE=smolvla)
+SMOLVLA_POLICY_PATH="lerobot/smolvla_base"
+
+SSH_KEY_FILE="${HOME}/.ssh/ucl_key"
 \end{lstlisting}
+
+\noindent Parameter notes:
+\begin{itemize}
+    \item \texttt{STEPS=100000} --- with 94,647 frames and \texttt{BATCH\_SIZE=4},
+          one epoch $\approx$ 23,661 steps. 100k steps $\approx$ 4 epochs.
+    \item \texttt{BATCH\_SIZE=4} --- GPU VRAM limited. \texttt{ACT\_CHUNK\_SIZE=100}
+          produces large attention matrices; batch 8 causes OOM on a 24\,GiB card.
+    \item \texttt{ACT\_CHUNK\_SIZE=100} --- standard from the ACT paper for
+          manipulation tasks.
+    \item \texttt{PREPROCESS\_ON\_GPU=false} --- datasets are converted locally
+          and synced to scratch.
+\end{itemize}
 
 \section{2) Local Steps}
+
 \begin{lstlisting}[language=bash]
-bash scripts/01_sync_to_gpu.sh
-bash scripts/02_preflight_gpu.sh
+bash scripts/01_sync_to_gpu.sh   # sync code + datasets
+bash scripts/02_preflight_gpu.sh # check everything is in place
 \end{lstlisting}
 
-Helper block:
+\noindent What \texttt{01\_sync\_to\_gpu.sh} does:
+\begin{itemize}
+    \item Syncs code $\to$ remote home (\texttt{\textasciitilde/smolvla\_project/SmolVLA-Testing/})
+    \item If \texttt{PREPROCESS\_ON\_GPU=false}: syncs \textbf{only the datasets listed
+          in \texttt{DATASET\_NAMES}} $\to$
+          \texttt{/scratch0/<user>/lerobot\_datasets/<ds>/} (one rsync per dataset, nothing extra)
+    \item If \texttt{PREPROCESS\_ON\_GPU=true}: syncs \textbf{only the cleaned datasets
+          in \texttt{DATASET\_NAMES}} $\to$
+          \texttt{/scratch0/<user>/cleaned\_datasets/<ds>/}
+\end{itemize}
+
+\section{3) GPU Environment Setup}
+
+Run \textbf{once per GPU booking} (scratch is wiped when the booking expires):
 \begin{lstlisting}[language=bash]
-cp scripts/00_run_params.local.example.sh scripts/00_run_params.local.sh
-$EDITOR scripts/00_run_params.local.sh
-bash scripts/01_sync_to_gpu.sh
-bash scripts/02_preflight_gpu.sh
+bash scripts/03_setup_gpu.sh
 \end{lstlisting}
 
-Preflight note: on a fresh booking, a missing
-\texttt{/scratch0/<user>/activate\_smolvla.sh} is expected before setup and
-is reported as a warning. Run \texttt{scripts/03\_setup\_gpu.sh} on the GPU
-node to generate it.
+This SSHs into the GPU node and runs \texttt{scripts/setup\_scratch.sh}, which:
+\begin{itemize}
+    \item Creates the scratch venv at \texttt{/scratch0/<user>/smolvla\_venv/}
+    \item Redirects \textbf{all} caches to scratch (critical for the 10\,GB home quota):
+    \begin{itemize}
+        \item \texttt{HF\_HOME} $\to$ \texttt{/scratch0/<user>/.cache/huggingface/}
+        \item \texttt{TORCH\_HOME} $\to$ \texttt{/scratch0/<user>/.cache/torch/}
+              (PyTorch/torchvision backbone weights)
+        \item \texttt{UV\_CACHE\_DIR}, \texttt{PIP\_CACHE\_DIR} $\to$ scratch
+    \end{itemize}
+    \item Writes \texttt{activate\_smolvla.sh} and \texttt{activate\_smolvla.csh} shims
+\end{itemize}
 
-\section{3) Connect to GPU}
+\noindent\textbf{UCL quota note:} The home NFS share has a hard \textbf{10\,GB quota}.
+PyTorch, torchvision backbone weights, and HuggingFace model files together
+easily exceed this. Never install packages or download models into \texttt{\textasciitilde/.local/}
+or \texttt{\textasciitilde/.cache/} directly --- always use the scratch-redirected environment.
+
+\section{4) Connect to GPU}
+
 \begin{lstlisting}[language=bash]
 source scripts/00_run_params.sh
-ssh -l "$REMOTE_USER" -J "$REMOTE_USER@$JUMP_HOST" "$GPU_NODE"
+ssh -o IdentityAgent=none -i "${SSH_KEY_FILE}" \
+    -o IdentitiesOnly=yes \
+    -J "${REMOTE_USER}@${JUMP_HOST}" \
+    "${REMOTE_USER}@${GPU_NODE}"
 \end{lstlisting}
 
-\section{4) Remote Steps (on GPU)}
+Or using the SSH config alias:
+\begin{lstlisting}[language=bash]
+ssh -o IdentityAgent=none ucl-hotrod
+\end{lstlisting}
+
+\section{5) Launch Training (on GPU node)}
+
 \begin{lstlisting}[language=bash]
 cd ~/smolvla_project/SmolVLA-Testing/scripts
-bash ./03_setup_gpu.sh
 bash ./04_start_training.sh
 \end{lstlisting}
 
-Helper block:
-\begin{lstlisting}[language=bash]
-cd ~/smolvla_project/SmolVLA-Testing/scripts
-bash ./03_setup_gpu.sh
-bash ./04_start_training.sh
-\end{lstlisting}
+The script:
+\begin{enumerate}
+    \item Merges datasets listed in \texttt{DATASET\_NAMES} into a single LeRobotDataset
+    \item Applies source patches (frame tolerance fallback, task fallback)
+    \item Launches training via \texttt{nohup} with:
+    \begin{itemize}
+        \item \texttt{HF\_HUB\_OFFLINE=1} --- no network calls to HuggingFace
+        \item \texttt{TORCH\_HOME} $\to$ scratch (prevents backbone downloads hitting home quota)
+        \item \texttt{PYTORCH\_CUDA\_ALLOC\_CONF=expandable\_segments:True} --- reduces fragmentation
+    \end{itemize}
+\end{enumerate}
 
-If \texttt{PREPROCESS\_ON\_GPU=true}, \texttt{04\_start\_training.sh} first
-converts datasets listed in \texttt{DATASET\_NAMES} from
-\texttt{REMOTE\_CLEANED\_DATASET\_ROOT} into \texttt{DATASET\_ROOT}, then
-launches training.
-
-If \texttt{PREPROCESS\_VCODEC=h264\_nvenc} fails (NVENC unavailable), the
-script automatically retries preprocessing with \texttt{h264}.
-
-Resume mode:
+Resume an interrupted run:
 \begin{lstlisting}[language=bash]
 bash ./04_start_training.sh --resume
 \end{lstlisting}
 
-\section{5) Extract After Training (Local)}
+\section{6) Monitor Training}
+
+\noindent\textbf{From your Mac:}
+\begin{lstlisting}[language=bash]
+# Current step, percentage, speed
+ssh -o IdentityAgent=none ucl-hotrod \
+  "tail -20 /scratch0/eredhead/smolvla_outputs/test_100_101_102_103_act.log \
+   | grep -oE '[0-9]+/100000.*step/s'"
+
+# Live log tail
+ssh -o IdentityAgent=none ucl-hotrod \
+  "tail -f /scratch0/eredhead/smolvla_outputs/test_100_101_102_103_act.log"
+\end{lstlisting}
+
+\noindent\textbf{From hotrod directly:}
+\begin{lstlisting}[language=bash]
+tail -5 /scratch0/eredhead/smolvla_outputs/test_100_101_102_103_act.log \
+  | grep -oE '[0-9]+/100000.*step/s'
+tail -f /scratch0/eredhead/smolvla_outputs/test_100_101_102_103_act.log
+watch -n 2 nvidia-smi
+\end{lstlisting}
+
+The progress bar in the log looks like:
+\begin{lstlisting}
+Training:  12%|█▏  | 12000/100000 [45:12<5:31:08,  4.43step/s]
+\end{lstlisting}
+
+At $\approx$4.4 steps/sec, 100k steps takes approximately \textbf{6.3 hours}.
+
+Log file path template:
+\begin{lstlisting}
+/scratch0/<user>/smolvla_outputs/<RUN_NAME>_<MODEL_TYPE>.log
+\end{lstlisting}
+
+\section{7) Extract Checkpoints (Local)}
+
 \begin{lstlisting}[language=bash]
 bash scripts/05_extract_from_scratch.sh
 \end{lstlisting}
 
-The extraction script aborts if destination exists and is non-empty.
+\begin{itemize}
+    \item Destination: \texttt{LOCAL\_CHECKPOINTS\_ROOT/EXTRACT\_FOLDER\_NAME}
+          (default: \texttt{checkpoints/test\_100\_101\_102\_103\_act\_full/})
+    \item Safe: aborts if destination is non-empty
+    \item Uses \texttt{--partial --inplace} so interrupted transfers resume cleanly
+    \item Can be run mid-training to pull intermediate checkpoints
+\end{itemize}
+
+\section{Disk Management}
+
+\begin{tabular}{lll}
+\toprule
+\textbf{Location} & \textbf{Purpose} & \textbf{Safe to delete?} \\
+\midrule
+\texttt{\textasciitilde/.local/lib/python*/} & Old pip installs leaked to home & Yes --- use scratch venv \\
+\texttt{/scratch0/<user>/lerobot\_datasets/<old>/} & Datasets not in current run & Yes \\
+\texttt{/scratch0/<user>/smolvla\_outputs/<old>/} & Old training outputs & Yes, after extracting \\
+\texttt{/scratch0/<user>/smolvla\_venv/} & Active venv & Only if rebuilding env \\
+\texttt{\textasciitilde/rl\_coursework/} & Academic work & No \\
+\bottomrule
+\end{tabular}
+
+\vspace{0.5em}
+Check quota on hotrod:
+\begin{lstlisting}[language=bash]
+df -h ~
+du -sh /scratch0/eredhead/*/
+\end{lstlisting}
 
 \section{Platform Compatibility}
 \begin{itemize}
-    \item macOS: supported.
+    \item macOS: supported (current setup).
     \item Linux: supported.
-    \item Windows: supported via WSL or Git Bash/MSYS2 with \texttt{ssh} and \texttt{rsync} installed.
-    \item Plain PowerShell/CMD without a Bash+rsync environment is not supported by these scripts.
-    \item In WSL, keep the repository inside the Linux filesystem for better performance.
+    \item Windows: supported via WSL (Ubuntu) or Git Bash/MSYS2 with \texttt{ssh} and \texttt{rsync}.
+          Keep the repo inside the Linux filesystem in WSL for best performance.
+    \item Plain PowerShell/CMD is not supported.
 \end{itemize}
 
 \section{Known Constraints}
 \begin{enumerate}
-    \item One literal \texttt{rsync} invocation cannot send code to home and data to scratch simultaneously.
-    \item \texttt{scripts/01\_sync\_to\_gpu.sh} provides one-command UX by doing two internal \texttt{rsync} calls.
-    \item SSH prompts depend on key/password auth configuration.
+    \item One \texttt{rsync} call cannot send code to home and data to scratch simultaneously ---
+          \texttt{01\_sync\_to\_gpu.sh} uses two sequential calls.
+    \item Scripts pass \texttt{-o IdentitiesOnly=yes -o IdentityAgent=none} to prevent
+          ``Too many authentication failures'' when many keys are loaded in the SSH agent.
+    \item UCL's home quota is \textbf{10\,GB}. The \texttt{setup\_scratch.sh} script
+          redirects all large caches to scratch, but never run pip/uv outside the
+          scratch-activated environment.
 \end{enumerate}
 
 \end{document}

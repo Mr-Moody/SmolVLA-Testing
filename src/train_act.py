@@ -162,7 +162,7 @@ def train_act(
         n_action_steps=chunk_size,  # Number of actions to run per policy invocation
         use_vae=use_vae,
         vision_backbone=vision_backbone,
-        pretrained_backbone_weights="ResNet18_Weights.IMAGENET1K_V1" if vision_backbone == "resnet18" else None,
+        pretrained_backbone_weights=None,
         device=device,
         push_to_hub=push_to_hub,
         repo_id=policy_repo_id,
