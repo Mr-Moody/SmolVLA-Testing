@@ -80,6 +80,11 @@ export HF_HOME="${CACHE_DIR}/huggingface"
 export TRANSFORMERS_CACHE="${CACHE_DIR}/huggingface/hub"
 export HF_DATASETS_CACHE="${CACHE_DIR}/huggingface/datasets"
 
+# PyTorch / torchvision hub cache — ResNet and other backbone weights land here.
+# Without this, torch.hub defaults to ~/.cache/torch which is on the 10GB NFS
+# home quota and will immediately exhaust it when the vision backbone downloads.
+export TORCH_HOME="${CACHE_DIR}/torch"
+
 # Tell uv to create the project's venv in scratch rather than inside lerobot/
 # Without this, uv would default to lerobot/.venv which is on the network quota.
 export UV_PROJECT_ENVIRONMENT="${VENV_DIR}"
@@ -109,6 +114,7 @@ mkdir -p "${CACHE_DIR}/pip"
 mkdir -p "${CACHE_DIR}/uv"
 mkdir -p "${CACHE_DIR}/huggingface/hub"
 mkdir -p "${CACHE_DIR}/huggingface/datasets"
+mkdir -p "${CACHE_DIR}/torch/hub/checkpoints"
 
 # Also ensure the persistent checkpoint rescue directory exists in home.
 # This is small (just model weights) so it is safe to keep in ~/
@@ -235,6 +241,7 @@ export UV_CACHE_DIR="${CACHE_DIR}/uv"
 export HF_HOME="${CACHE_DIR}/huggingface"
 export TRANSFORMERS_CACHE="${CACHE_DIR}/huggingface/hub"
 export HF_DATASETS_CACHE="${CACHE_DIR}/huggingface/datasets"
+export TORCH_HOME="${CACHE_DIR}/torch"
 export UV_PROJECT_ENVIRONMENT="${VENV_DIR}"
 export LEROBOT_ROOT="${LEROBOT_ROOT}"
 
@@ -242,6 +249,7 @@ echo "SmolVLA scratch environment activated."
 echo "  uv      : ${UV_BIN_DIR}/uv"
 echo "  Venv    : ${VENV_DIR}"
 echo "  HF Home : ${HF_HOME}"
+echo "  Torch   : ${CACHE_DIR}/torch"
 SHIM_EOF
 
 # --- tcsh shim ---
@@ -256,6 +264,7 @@ setenv UV_CACHE_DIR "${CACHE_DIR}/uv"
 setenv HF_HOME "${CACHE_DIR}/huggingface"
 setenv TRANSFORMERS_CACHE "${CACHE_DIR}/huggingface/hub"
 setenv HF_DATASETS_CACHE "${CACHE_DIR}/huggingface/datasets"
+setenv TORCH_HOME "${CACHE_DIR}/torch"
 setenv UV_PROJECT_ENVIRONMENT "${VENV_DIR}"
 setenv LEROBOT_ROOT "${LEROBOT_ROOT}"
 

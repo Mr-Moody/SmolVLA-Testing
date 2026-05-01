@@ -13,25 +13,33 @@ WORKFLOW_USER="eredhead"
 REMOTE_PROJECT_DIRNAME="smolvla_project"
 
 # -------- Core run controls --------
-RUN_NAME="test_100"
-DATASET_NAMES=(100)
+MODEL_TYPE="act"  # smolvla | act
+RUN_NAME="test_100_101_102_103"
+DATASET_NAMES=(100 101 102 103)
 DATASET_ROOT="/scratch0/${WORKFLOW_USER}/lerobot_datasets"
 SAVE_FREQ=1000
 
 # -------- Preprocessing controls --------
 # If true, convert cleaned_datasets -> lerobot_datasets on GPU right before training.
-PREPROCESS_ON_GPU=true
+PREPROCESS_ON_GPU=false
 REMOTE_CLEANED_DATASET_ROOT="/scratch0/${WORKFLOW_USER}/cleaned_datasets"
 PREPROCESS_VCODEC="h264_nvenc"
-
 # -------- Training hyperparameters --------
-STEPS=20000
-BATCH_SIZE=8
+STEPS=100000
+BATCH_SIZE=4
 NUM_WORKERS=4
 LOG_FREQ=50
 SEED=1000
 USE_AMP=true
 RESUME=false
+
+# -------- Model-specific knobs --------
+SMOLVLA_POLICY_PATH="lerobot/smolvla_base"
+ACT_POLICY_PATH="lerobot/act_base"
+ACT_CHUNK_SIZE=100
+ACT_N_OBS_STEPS=1
+ACT_USE_VAE=true
+ACT_VISION_BACKBONE="resnet18"
 
 # -------- Optional runtime patches --------
 ALLOW_NEAREST_FRAME_FALLBACK=true
@@ -41,6 +49,11 @@ ALLOW_MISSING_TASK_FALLBACK=true
 REMOTE_USER="${WORKFLOW_USER}"
 GPU_NODE="hotrod.cs.ucl.ac.uk"
 JUMP_HOST="knuckles.cs.ucl.ac.uk"
+# SSH key for passwordless access. Generate once with:
+#   ssh-keygen -t ed25519 -f ~/.ssh/ucl_key -N ""
+# Then install on the GPU node from an active session:
+#   echo "$(cat ~/.ssh/ucl_key.pub)" >> ~/.ssh/authorized_keys
+SSH_KEY_FILE="${HOME}/.ssh/ucl_key"
 
 # -------- Remote project layout --------
 REMOTE_SCRATCH_BASE="/scratch0/${REMOTE_USER}"
@@ -48,9 +61,8 @@ REMOTE_SCRATCH_BASE="/scratch0/${REMOTE_USER}"
 # -------- Local paths --------
 LOCAL_PROJECT_ROOT="${DEFAULT_LOCAL_PROJECT_ROOT}"
 LOCAL_DATA_PULL_SOURCE="${LOCAL_PROJECT_ROOT}/lerobot_datasets"
-LOCAL_CLEANED_DATA_SOURCE="${LOCAL_PROJECT_ROOT}/cleaned_datasets"
 LOCAL_CHECKPOINTS_ROOT="${LOCAL_PROJECT_ROOT}/checkpoints"
-EXTRACT_FOLDER_NAME="${RUN_NAME}_smolvla_full"
+EXTRACT_FOLDER_NAME="${RUN_NAME}_${MODEL_TYPE}_full"
 
 # -------- Local override (gitignored) --------
 # Create scripts/00_run_params.local.sh for personal paths/hosts/user values.

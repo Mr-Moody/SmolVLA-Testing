@@ -7,6 +7,7 @@ source "${SCRIPT_DIR}/00_run_params.sh"
 
 SSH_REMOTE="${REMOTE_USER}@${GPU_NODE}"
 SSH_JUMP="${REMOTE_USER}@${JUMP_HOST}"
+SSH_OPTS="-i ${SSH_KEY_FILE} -o IdentitiesOnly=yes -o IdentityAgent=none"
 CHECK_TIMEOUT=12
 
 FAILED=0
@@ -57,7 +58,7 @@ done
 echo ""
 echo "[2/4] SSH reachability"
 REMOTE_HOME_DIR=""
-if REMOTE_HOME_DIR="$(ssh -o ConnectTimeout="${CHECK_TIMEOUT}" -J "${SSH_JUMP}" "${SSH_REMOTE}" 'printf %s "$HOME"' 2>/dev/null)"; then
+if REMOTE_HOME_DIR="$(ssh ${SSH_OPTS} -o ConnectTimeout="${CHECK_TIMEOUT}" -J "${SSH_JUMP}" "${SSH_REMOTE}" 'printf %s "$HOME"' 2>/dev/null)"; then
   pass "SSH/jump connectivity to ${GPU_NODE}"
   pass "Remote home detected: ${REMOTE_HOME_DIR}"
 else
@@ -73,7 +74,7 @@ if [[ -n "${REMOTE_HOME_DIR}" ]]; then
   REMOTE_CODE_DIR="${REMOTE_HOME_PROJECT}/SmolVLA-Testing"
   DATASET_NAMES_STR="${DATASET_NAMES[*]}"
 
-  remote_checks_output="$(ssh -o ConnectTimeout="${CHECK_TIMEOUT}" -J "${SSH_JUMP}" "${SSH_REMOTE}" bash -s -- "${REMOTE_HOME_PROJECT}" "${REMOTE_LEROBOT_DIR}" "${REMOTE_CODE_DIR}" "${REMOTE_SCRATCH_BASE}" "${DATASET_ROOT}" "${REMOTE_CLEANED_DATASET_ROOT}" "${PREPROCESS_ON_GPU}" "${DATASET_NAMES_STR}" <<'EOS'
+  remote_checks_output="$(ssh ${SSH_OPTS} -o ConnectTimeout="${CHECK_TIMEOUT}" -J "${SSH_JUMP}" "${SSH_REMOTE}" bash -s -- "${REMOTE_HOME_PROJECT}" "${REMOTE_LEROBOT_DIR}" "${REMOTE_CODE_DIR}" "${REMOTE_SCRATCH_BASE}" "${DATASET_ROOT}" "${REMOTE_CLEANED_DATASET_ROOT}" "${PREPROCESS_ON_GPU}" "${DATASET_NAMES_STR}" <<'EOS'
 set -u
 status=0
 home_project="$1"
