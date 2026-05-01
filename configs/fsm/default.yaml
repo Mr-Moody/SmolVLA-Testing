@@ -1,0 +1,15 @@
+# Default FSM thresholds — inherited by task-specific configs.
+# All forces in Newtons, distances in metres, times in seconds.
+
+contact_force_threshold: 3.0       # Fz above which contact_establish is triggered
+align_xy_threshold: 0.005          # XY distance (m) for free_motion → fine_align
+hover_z: 0.05                      # Z height below which fine_align check is active
+gripper_stable_steps: 30           # Steps gripper must be closed before constrained_motion
+hysteresis_steps: 3                # Steps predicate must be True before transition
+fine_align_timeout_s: 5.0          # Time in fine_align before falling back to free_motion
+control_rate_hz: 100.0             # Control loop frequency
+
+# Force bands for insertion phases (task-specific overrides below)
+mate_force_band: [0.5, 3.0]        # Fz range for contact_establish → constrained_motion
+seated_force_band: [3.0, 8.0]      # Fz range for constrained_motion → verify_release
+insertion_z_target: 0.012          # TCP z offset indicating insertion complete

@@ -1,0 +1,27 @@
+# Standard evaluation configuration.
+# Used by scripts/eval.py and scripts/report.py.
+
+n_episodes: 20
+n_corruption_episodes: 10
+seed: 42
+
+# Initial pose distribution for object/connector
+pick_place_pose_distribution:
+  x_range: [0.35, 0.65]
+  y_range: [-0.20, 0.20]
+  z_fixed: 0.03
+  yaw_range: [-0.785, 0.785]   # ±45 degrees
+
+msd_plug_pose_distribution:
+  x_range: [0.45, 0.55]
+  y_range: [-0.05, 0.05]
+  z_range: [0.10, 0.15]
+  yaw_range: [-0.1, 0.1]
+
+# Success criteria
+pick_place_success_tolerance_m: 0.005
+msd_plug_success_force_n: 3.0
+
+# Phase corruption (for FSM and π0 variants)
+corruption_duration_s: 1.0        # How long to inject wrong phase
+corruption_phase_offset: 2        # Phase ID offset for corruption

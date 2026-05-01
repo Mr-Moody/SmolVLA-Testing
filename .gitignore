@@ -236,3 +236,4 @@ checkpoints/
 .vscode/
 trailbreaker_commands_private.md
 scripts/00_run_params.local.sh
+smolvla_qwen_guide.tex

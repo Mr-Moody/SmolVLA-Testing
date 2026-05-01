@@ -1,0 +1,15 @@
+# FSM thresholds for pick-and-place task.
+# Inherits all defaults from default.yaml; override task-specific values here.
+
+contact_force_threshold: 3.0       # N — gripper contact force
+align_xy_threshold: 0.005          # m — XY proximity for fine_align
+hover_z: 0.05                      # m — arm is in fine_align zone below this height
+gripper_stable_steps: 30           # steps — how long gripper must be stable
+hysteresis_steps: 3
+fine_align_timeout_s: 5.0
+control_rate_hz: 100.0
+
+# Pick-and-place: looser force bands (no precision insertion)
+mate_force_band: [0.5, 10.0]
+seated_force_band: [3.0, 12.0]
+insertion_z_target: 0.0            # Not applicable; use z approach for verify_release

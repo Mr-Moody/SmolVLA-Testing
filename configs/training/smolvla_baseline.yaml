@@ -1,0 +1,24 @@
+# SmolVLA baseline — vanilla fine-tune, no phase information.
+# Inherits base.yaml; delegates to main.py train --model-type smolvla.
+#
+# Invocation:
+#   python scripts/train_phase.py \\
+#       --config configs/training/smolvla_baseline.yaml \\
+#       --dataset-name <name>
+#
+# This will internally call:
+#   main.py train --dataset-root lerobot_datasets/<name> --model-type smolvla
+
+_base: configs/training/base.yaml
+
+model_type: smolvla
+use_phase_conditioning: false
+
+# Dataset path template (${dataset_name} is substituted at runtime)
+dataset_path: "lerobot_datasets/${dataset_name}"
+
+# Checkpoint output directory template
+output_dir: "outputs/${dataset_name}_smolvla_baseline"
+
+# Pass-through to main.py train
+extra_train_args: []

@@ -1,0 +1,15 @@
+# FSM thresholds for MSD connector plugging task.
+# Tighter thresholds than pick-and-place due to precision insertion requirements.
+
+contact_force_threshold: 1.5       # N — lighter; pin contact is delicate
+align_xy_threshold: 0.001          # m — sub-mm precision alignment required
+hover_z: 0.03                      # m — lower hover height for fine-alignment zone
+gripper_stable_steps: 30
+hysteresis_steps: 3
+fine_align_timeout_s: 8.0          # Longer timeout; alignment takes more time
+control_rate_hz: 100.0
+
+# MSD plugging: precise force bands for insertion
+mate_force_band: [0.5, 3.0]        # N — light contact during initial insertion
+seated_force_band: [3.0, 8.0]      # N — fully seated force range
+insertion_z_target: 0.012          # m — TCP z displacement indicating full insertion

@@ -1,55 +1,88 @@
-# SmolVLA / Pi0 / ACT Dataset + Training Utilities
+# SmolVLA / Pi0 / ACT — Dataset + Phase-Conditioned Training Pipeline
 
-Unified pipeline for collecting, labeling, converting, and training robot demonstration data with SmolVLA, Pi0, Pi0.5, or ACT policies.
+Unified pipeline for collecting, labeling, converting, and training robot demonstration data with SmolVLA, Pi0, Pi0.5, or ACT policies — extended with **Qwen3-VL offline phase annotation**, a **runtime FSM**, and **three phase-conditioned policy variants**.
+
+---
 
 ## Project Layout
 
 ```text
 Industrial-Project/
-  lerobot/              ← sibling lerobot clone (provides torch + policy deps)
+  lerobot/                     ← sibling lerobot clone (torch + policy deps)
   SmolVLA-Testing/
-    main.py             ← unified CLI entry point (clean / label / convert / train)
-    src/                ← Python source modules
-      data_cleaner.py
-      data_converter.py
-      dataset_utils.py
-      labeler.py
-      create_labels.py
-      merge_datasets.py
-      smolvla_franka_setup.py
-      train_act.py
-      train_pi0.py
-      patch_frame_tolerance.py
-      patch_nvenc.py
-      patch_task_none.py
-    train_act_standalone.py ← standalone ACT training script
-    scripts/            ← bash scripts for batch ops and GPU cluster workflows
-      convert_all.sh
-      restart_conversion.sh
-      run_training.sh
-      setup_scratch.sh
-      training_status_snapshot.sh
-      00_run_params.sh
-      01_sync_to_gpu.sh
-      02_preflight_gpu.sh
-      03_setup_gpu.sh
-      04_start_training.sh
-      05_extract_from_scratch.sh
-    frontend/           ← labeler web UI (templates + static assets)
+    main.py                    ← unified CLI (clean / label / convert / train)
+    src/
+      common/
+        phases.py              ← SINGLE SOURCE OF TRUTH for phase IDs + transition rules
+      annotation/
+        serve_qwen.py          ← QwenAnnotator — vLLM wrapper for Qwen3-VL-30B
+        sampler.py             ← KeyframeSampler — gripper/F·T/velocity keyframe picker
+        prompt.py              ← PromptBuilder — task-aware few-shot prompt assembly
+        schema.py              ← PhaseSegment + EpisodeAnnotation (Pydantic v2)
+        validator.py           ← Annotation quality checks (schema, legality, FSM x-check)
+      fsm/
+        runtime_fsm.py         ← RuntimeFSM — predicate-based, hysteresis-debounced
+      smolvla_fork/
+        configuration_smolvla.py  ← SmolVLAForkedConfig (phase_dropout_prob, use_phase_conditioning)
+        modeling_smolvla.py       ← VLAFlowMatchingPhased + SmolVLAPhasedPolicy
+        dataset.py                ← PhaseConditionedDataset + phase_collate_fn
+        CHANGELOG.md              ← upstream version + what was changed
+      inference/
+        policy_runner.py       ← PolicyRunner — closed-loop episode runner
+      robot/
+        franka_interface.py    ← MockFrankaInterface + safety envelope (NaN/Inf/vel/force/gripper)
+      scripts/                 ← Python CLI entry points (moved here from scripts/)
+        annotate_dataset.py    ← Batch Qwen annotation driver
+        build_gold_set.py      ← Interactive gold-set builder
+        deploy_check.py        ← Pre-deployment safety checklist
+        eval.py                ← Evaluation harness (dry-run + real)
+        report.py              ← Comparison report with Wilson CI + matplotlib charts
+        serve_qwen.py          ← Thin CLI wrapper around QwenAnnotator
+        train_phase.py         ← Phase-conditioned training entry point
+        tune_fsm.py            ← FSM threshold tuning vs Qwen ground-truth
+        writeback_annotations.py ← Merge phase + subtask columns into dataset copy
+      data_cleaner.py          ← (existing — do not modify)
+      data_converter.py        ← (existing — do not modify)
+      dataset_utils.py         ← (existing — do not modify)
+      labeler.py               ← (existing — do not modify)
+      create_labels.py         ← (existing — do not modify)
+      merge_datasets.py        ← (existing — do not modify)
+      train_act.py             ← (existing — do not modify)
+      train_pi0.py             ← (existing — do not modify)
+    scripts/                   ← Shell scripts only (batch ops, GPU cluster)
+      00_run_params.sh … 05_extract_from_scratch.sh
+      convert_all.sh  run_training.sh  setup_scratch.sh  …
+    configs/
+      training/
+        smolvla_baseline.yaml  smolvla_fsm.yaml  pi0_subtask.yaml
+      fsm/
+        default.yaml  pick_place.yaml  msd_plug.yaml
+      eval/
+        standard.yaml
+    tests/                     ← pytest suite (81 tests, all passing)
+    data/gold/                 ← hand-annotated few-shot episodes
+    outputs/                   ← training checkpoints, eval results, reports
+    frontend/                  ← labeler web UI
 ```
 
-Data directories created by the pipeline:
+### Data directories
 
 ```text
-SmolVLA-Testing/
-  raw_datasets/<name>/          ← recorded session (input to clean)
-  cleaned_datasets/<name>/      ← output of  main.py clean
-  lerobot_datasets/<name>/      ← output of  main.py convert  (LeRobot v3)
-  outputs/<name>_smolvla/       ← output of  main.py train --model-type smolvla
-  outputs/<name>_pi0/           ← output of  main.py train --model-type pi0
-  outputs/<name>_pi05/          ← output of  main.py train --model-type pi05
-  outputs/<name>_act/           ← output of  main.py train --model-type act
+raw_datasets/<name>/               ← recorded session (input to clean)
+cleaned_datasets/<name>/           ← output of  main.py clean
+lerobot_datasets/<name>/           ← output of  main.py convert  (LeRobot v3)
+lerobot_datasets/<name>_annotated/ ← phase + subtask columns written by writeback_annotations.py
+outputs/<name>_smolvla/            ← output of  main.py train --model-type smolvla
+outputs/<name>_pi0/                ← output of  main.py train --model-type pi0
+outputs/<name>_pi05/               ← output of  main.py train --model-type pi05
+outputs/<name>_act/                ← output of  main.py train --model-type act
+outputs/annotations/               ← per-episode Qwen annotation parquets
+outputs/eval/<run>/results.json    ← evaluation results
+outputs/reports/                   ← markdown + PNG comparison reports
+data/gold/                         ← hand-annotated reference episodes (few-shot source)
 ```
+
+---
 
 ## Installation
 
@@ -71,17 +104,33 @@ uv pip install -e "."
 uv pip install -e ".[smolvla,pi0]"
 ```
 
+Install phase-conditioning extras (vLLM, Pydantic v2, etc.):
+
+```bash
+pip install -r requirements_phase.txt
+```
+
+---
+
 ## Running Commands
 
-`SmolVLA-Testing` does not have its own `pyproject.toml`. All `main.py` commands must be run against the `lerobot` project environment so that `torch`, `lerobot`, and other heavy deps resolve correctly:
+`SmolVLA-Testing` does not have its own `pyproject.toml`. All `main.py` commands must be run against the `lerobot` project environment:
 
 ```bash
 uv --project ../lerobot run python main.py <subcommand> [args]
 ```
 
-> **Note:** plain `python` / `python3` won't have `torch` installed, and `uv run` (without `--project ../lerobot`) uses this repo's missing environment. Always use `uv --project ../lerobot run python main.py ...`.
+Python CLI scripts in `src/scripts/` can be run directly (they manage their own `sys.path`):
 
-## Full Pipeline
+```bash
+python src/scripts/<script>.py [args]
+# or
+python -m src.scripts.<script> [args]
+```
+
+---
+
+## Full Base Pipeline
 
 ```bash
 # 1. Clean raw recording
@@ -93,46 +142,210 @@ uv --project ../lerobot run python main.py label
 # 3. Convert to LeRobotDataset v3
 uv --project ../lerobot run python main.py convert <dataset_name> --primary-camera <camera_name>
 
-# 4. Train  (SmolVLA is the default; pass --model-type pi0, pi05, or act to switch)
+# 4. Train  (SmolVLA default; pass --model-type pi0, pi05, or act to switch)
 uv --project ../lerobot run python main.py train \
   --dataset-root lerobot_datasets/<dataset_name> \
   [--model-type smolvla|pi0|pi05|act]
 ```
 
-Example end-to-end for a dataset called `socket` with dual ZED Mini + third-person cameras:
+---
+
+## Phase-Conditioned Pipeline (New)
+
+Three phase-conditioned policy variants sit on top of the base pipeline.
+
+### Architecture Overview
+
+```
+cleaned_datasets/<name>/
+  └─ KeyframeSampler ──► Qwen3-VL-30B (vLLM) ──► EpisodeAnnotation (Pydantic)
+                                                         │
+                                              Validator (schema + FSM x-check)
+                                                         │
+                                          writeback_annotations.py
+                                                         │
+                                  lerobot_datasets/<name>_annotated/
+                                    ├─ phase  (int64 per frame, IDs 0–4)
+                                    └─ subtask (str, e.g. "pick_place.contact_establish")
+                                                         │
+                           ┌─────────────────────────────┴─────────────────────────┐
+                           │                             │                          │
+                  SmolVLA-baseline              SmolVLA-FSM                  π0-subtask
+                  (no phase info)        (phase embedding +              (native subtask col)
+                                          runtime FSM)
+```
+
+### Five-Phase Taxonomy  (`src/common/phases.py` — single source of truth)
+
+| ID | Name | Pick-and-Place | MSD Plugging |
+|----|------|----------------|--------------|
+| 0 | `free_motion` | Approach to object, transport to target (no contact) | Approach to receptacle (gripper holding connector) |
+| 1 | `fine_align` | Pre-grasp positioning, visual servo onto object | Pin-to-socket alignment, sub-mm positioning |
+| 2 | `contact_establish` | Gripper closure on object | First pin contact / pre-mate touch |
+| 3 | `constrained_motion` | Lift while grasped, in-hand manipulation | Insertion stroke under contact |
+| 4 | `verify_release` | Place + gripper open + retract | Seating verification, gripper open + retract |
+
+**Never hardcode phase integers.** Always import from `src/common/phases.py`:
+
+```python
+from src.common.phases import Phase, PHASE_NAMES, is_legal_transition
+```
+
+### Policy Variants
+
+| Variant | Config | Notes |
+|---------|--------|-------|
+| `smolvla_baseline` | `configs/training/smolvla_baseline.yaml` | No phase info; delegates to `main.py train --model-type smolvla` |
+| `smolvla_fsm` | `configs/training/smolvla_fsm.yaml` | Forked SmolVLA in `src/smolvla_fork/` + runtime FSM phase signal |
+| `pi0_subtask` | `configs/training/pi0_subtask.yaml` | π0 with `subtask` column; delegates to `main.py train --model-type pi0` |
+
+### FSM Transition Rules  (`src/fsm/runtime_fsm.py`)
+
+```
+free_motion      → fine_align           (xy dist < threshold AND z < hover_z)
+fine_align       → contact_establish    (Fz > contact_force OR gripper close cmd)
+fine_align       → free_motion          (pose error > threshold for >300 ms)  ← re-approach
+contact_establish → constrained_motion  (gripper stable AND Fz in mate band)
+constrained_motion → verify_release     (target z reached AND Fz in seated band)
+verify_release   → (terminal)           (gripper open AND retract initiated)
+```
+
+Self-loops always legal; no backward jumps except `fine_align → free_motion`.  
+Thresholds: `configs/fsm/pick_place.yaml` and `configs/fsm/msd_plug.yaml`.
+
+### SmolVLA Fork — Phase Embedding
+
+`src/smolvla_fork/modeling_smolvla.py` adds to the action expert:
+
+```python
+self.phase_embedding = nn.Embedding(6, hidden_dim)   # index 5 = unknown token
+nn.init.zeros_(self.phase_embedding.weight)           # zero-init → identity at step 0
+```
+
+During training, phase IDs are randomly replaced with the unknown token (index 5) at
+`phase_dropout_prob = 0.15` probability. When `use_phase_conditioning=False`, the
+forward pass is byte-identical to the upstream SmolVLA.
+
+---
+
+## Step-by-Step Phase Annotation Workflow
 
 ```bash
-uv --project ../lerobot run python main.py clean socket --generate-tasks --force
-uv --project ../lerobot run python main.py label
-uv --project ../lerobot run python main.py convert socket --primary-camera ee_zed_m_left --force
+# 1. Build gold episodes interactively (few-shot source of truth → data/gold/)
+python src/scripts/build_gold_set.py \
+  --dataset-root lerobot_datasets/<name> \
+  --episode-id 0 --task pick_place
 
-# SmolVLA
-uv --project ../lerobot run python main.py train \
-  --dataset-root lerobot_datasets/socket \
-  --model-type smolvla \
-  --steps 20000 \
-  --batch-size 8
+# 2. Batch-annotate all episodes with Qwen3-VL
+python src/scripts/annotate_dataset.py \
+  --dataset-root lerobot_datasets/<name> \
+  --task pick_place \
+  --output-dir outputs/annotations
 
-# Pi0
-uv --project ../lerobot run python main.py train \
-  --dataset-root lerobot_datasets/socket \
-  --model-type pi0 \
-  --steps 20000 \
-  --batch-size 4
+# 3. Write phase + subtask columns into annotated dataset copy
+python src/scripts/writeback_annotations.py \
+  --annotations-dir outputs/annotations \
+  --source-dataset lerobot_datasets/<name> \
+  --output-dataset lerobot_datasets/<name>_annotated
 
-# ACT
-uv --project ../lerobot run python main.py train \
-  --dataset-root lerobot_datasets/socket \
-  --model-type act \
-  --chunk-size 100 \
-  --vision-backbone resnet18 \
-  --steps 20000 \
-  --batch-size 8
+# 4. (Optional) Tune FSM thresholds against Qwen ground truth
+python src/scripts/tune_fsm.py \
+  --episode-parquet outputs/annotations/episode_000000.parquet \
+  --task pick_place \
+  --annotation-json data/gold/0.json
+
+# 5. Train phase-conditioned variant
+python src/scripts/train_phase.py \
+  --config configs/training/smolvla_fsm.yaml \
+  --dataset-name <name>
+
+# 6. Smoke-test training (10 steps, mock dataset if real one missing)
+python src/scripts/train_phase.py \
+  --config configs/training/smolvla_fsm.yaml \
+  --dataset-name <name> \
+  --smoke-test
 ```
+
+---
+
+## Evaluation
+
+### Run evaluation harness (dry-run / CI)
+
+```bash
+python src/scripts/eval.py \
+  --variant smolvla_baseline \
+  --task pick_place \
+  --dry-run
+```
+
+### Run all three variants and generate comparison report
+
+```bash
+python src/scripts/eval.py --variant smolvla_baseline --task pick_place --dry-run
+python src/scripts/eval.py --variant smolvla_fsm      --task pick_place --dry-run
+python src/scripts/eval.py --variant pi0_subtask      --task pick_place --dry-run
+
+python src/scripts/report.py \
+  outputs/eval/<ts>_smolvla_baseline_pick_place/results.json \
+  outputs/eval/<ts>_smolvla_fsm_pick_place/results.json \
+  outputs/eval/<ts>_pi0_subtask_pick_place/results.json
+```
+
+The report writes:
+- `outputs/reports/<ts>_report.md` — markdown table with **95% Wilson confidence intervals**
+- `outputs/reports/<ts>_failure_chart.png` — stacked failure attribution by phase
+- `outputs/reports/<ts>_corruption_chart.png` — phase-corruption recovery rates
+
+### Eval config (`configs/eval/standard.yaml`)
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `n_episodes` | 20 | Normal evaluation episodes |
+| `n_corruption_episodes` | 10 | Phase-corruption episodes (FSM + π0 only) |
+| `seed` | 42 | Random seed |
+| `pick_place_success_tolerance_m` | 0.005 | Place position tolerance |
+| `msd_plug_success_force_n` | 3.0 | Minimum seating force (N) |
+
+---
+
+## Pre-Deployment Safety Checklist
+
+```bash
+# Mock mode (CI / offline):
+python src/scripts/deploy_check.py --mock
+
+# Real robot:
+python src/scripts/deploy_check.py \
+  --checkpoint outputs/my_run/checkpoint_10000 \
+  --variant smolvla_fsm
+```
+
+Checks: robot reachable, F/T sensor near zero, checkpoint valid, FSM valid phase, safety envelope rejects NaN actions, W&B available, e-stop confirmed.
+
+---
+
+## Testing
+
+```bash
+# All tests (excludes GPU and real-robot tests):
+python -m pytest tests/ -v -m "not gpu"
+
+# With coverage:
+python -m pytest tests/ -m "not gpu" --cov=src --cov-report=term-missing
+```
+
+Test markers:
+- `@pytest.mark.gpu` — requires CUDA GPU
+- `@pytest.mark.robot` — requires physical Franka robot (always skipped in CI)
+
+Current status: **81 tests, 81 pass**.
+
+---
 
 ## Command Reference
 
-### `main.py clean` — Filter Raw Dataset
+### `main.py clean`
 
 Removes static (non-moving) steps and trims to camera-covered frames only.
 
@@ -140,8 +353,7 @@ Removes static (non-moving) steps and trims to camera-covered frames only.
 uv --project ../lerobot run python main.py clean <dataset_name> [options]
 ```
 
-Input: `raw_datasets/<dataset_name>/`  
-Output: `cleaned_datasets/<dataset_name>/`
+Input: `raw_datasets/<dataset_name>/` → Output: `cleaned_datasets/<dataset_name>/`
 
 | Flag | Default | Description |
 |------|---------|-------------|
@@ -153,12 +365,12 @@ Output: `cleaned_datasets/<dataset_name>/`
 | `--action-translation-threshold` | `5e-6` | Min translation norm considered movement |
 | `--action-rotation-threshold` | `5e-5` | Min rotation norm considered movement |
 | `--max-episodes` | — | Limit number of episodes processed |
-| `--generate-tasks` | — | Auto-assign a task prompt to each episode and write `annotations.jsonl` |
+| `--generate-tasks` | — | Auto-assign task prompt + write `annotations.jsonl` |
 | `--force` | — | Overwrite existing output directory |
 
-### `main.py label` — Episode Labeling UI
+### `main.py label`
 
-Launches a local Flask web server for reviewing and labeling episodes in the browser.
+Launches a local Flask server for reviewing and labeling episodes in the browser.
 
 ```bash
 uv --project ../lerobot run python main.py label [options]
@@ -168,17 +380,16 @@ uv --project ../lerobot run python main.py label [options]
 |------|---------|-------------|
 | `--cleaned-root` | `cleaned_datasets` | Root of cleaned datasets |
 | `--raw-root` | `raw_datasets` | Root of raw videos |
-| `--port` | `5000` | HTTP port for the labeler server |
+| `--port` | `5000` | HTTP port |
 | `--no-browser` | — | Don't auto-open the browser |
 
-### `main.py convert` — Convert to LeRobotDataset v3
+### `main.py convert`
 
 ```bash
 uv --project ../lerobot run python main.py convert <dataset_name> [options]
 ```
 
-Input: `cleaned_datasets/<dataset_name>/`  
-Output: `lerobot_datasets/<dataset_name>/`
+Input: `cleaned_datasets/<dataset_name>/` → Output: `lerobot_datasets/<dataset_name>/`
 
 | Flag | Default | Description |
 |------|---------|-------------|
@@ -186,155 +397,63 @@ Output: `lerobot_datasets/<dataset_name>/`
 | `--output-root` | `lerobot_datasets` | Root for converted output |
 | `--repo-id` | `local/<dataset_name>` | LeRobot metadata repo id |
 | `--primary-camera` | — | Camera mapped to `observation.images.top` |
-| `--cameras` | — | Comma-separated camera names to include (default: all) |
+| `--cameras` | — | Comma-separated camera names to include |
 | `--camera-tolerance-ms` | `150` | Max robot/camera sync error (ms) |
 | `--text-tolerance-ms` | `2000` | Max text/frame sync error (ms) |
-| `--vcodec` | `h264` | Output video codec (`h264_nvenc` on GPU cluster) |
+| `--vcodec` | `h264` | Output video codec |
 | `--max-episodes` | — | Limit exported episodes |
 | `--max-steps-per-episode` | — | Limit steps per episode |
-| `--episode-report` | — | Write JSON classification report to this path |
 | `--force` | — | Overwrite existing output directory |
 
-### `main.py train` — Fine-Tune a Policy
+### `main.py train`
 
 ```bash
 uv --project ../lerobot run python main.py train --dataset-root <path> [options]
 ```
 
-**Common options** (all model types):
+**Common options:**
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--model-type` | `smolvla` | Policy architecture: `smolvla`, `pi0`, `pi05`, or `act` |
-| `--dataset-root` | *(required)* | Local LeRobotDataset v3 export directory |
-| `--lerobot-root` | *(auto-detected)* | Path to local lerobot clone |
-| `--policy-path` | *(model default)* | Pretrained checkpoint or HF model id |
-| `--output-dir` | `outputs/<dataset>_<model-type>` | Directory for checkpoints and logs |
+| `--model-type` | `smolvla` | `smolvla`, `pi0`, `pi05`, or `act` |
+| `--dataset-root` | *(required)* | LeRobotDataset v3 directory |
+| `--output-dir` | `outputs/<dataset>_<model>` | Checkpoints + logs |
 | `--batch-size` | `8` | Training batch size |
 | `--steps` | `20000` | Training steps |
-| `--device` | `cuda` | Training device (`cuda` or `cpu`) |
-| `--num-workers` | `4` | DataLoader worker count |
-| `--log-freq` | `50` | Log every N steps |
-| `--save-freq` | `1000` | Save checkpoint every N steps |
-| `--eval-freq` | `0` | Eval every N steps (`0` disables) |
+| `--device` | `cuda` | Training device |
 | `--seed` | `1000` | Training seed |
-| `--use-amp` | — | Enable automatic mixed precision |
-| `--episodes` | — | Comma-separated episode subset, e.g. `0,1,2` |
-| `--resume` | — | Resume from last checkpoint in `--output-dir` |
-| `--job-name` | — | Custom run name |
-| `--push-to-hub` | — | Push trained policy to Hugging Face Hub |
-| `--policy-repo-id` | — | Required with `--push-to-hub`, e.g. `user/model` |
+| `--use-amp` | — | Automatic mixed precision |
+| `--resume` | — | Resume from last checkpoint |
 
-**Default pretrained base checkpoints by model type:**
-
-| `--model-type` | Default `--policy-path` |
-|----------------|-------------------------|
-| `smolvla` | `lerobot/smolvla_base` |
-| `pi0` | `lerobot/pi0_base` |
-| `pi05` | `lerobot/pi05_base` |
-| `act` | `lerobot/act_base` |
-
-**Pi0 / Pi0.5 only options** (ignored for `smolvla`):
+**Pi0 / Pi0.5 only:**
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--freeze-vision-encoder` | — | Freeze the PaliGemma vision encoder |
-| `--train-expert-only` | — | Freeze entire VLM; train only the action expert and projections |
-| `--gradient-checkpointing` | — | Reduce VRAM at the cost of training speed |
-| `--dtype` | `float32` | Model weight dtype: `float32` or `bfloat16` |
+| `--freeze-vision-encoder` | — | Freeze PaliGemma vision encoder |
+| `--train-expert-only` | — | Freeze VLM; train action expert only |
+| `--gradient-checkpointing` | — | Reduce VRAM |
+| `--dtype` | `float32` | `float32` or `bfloat16` |
 
-> **VRAM guidance:** Pi0 and Pi0.5 use a PaliGemma 2B backbone (~20–24 GB in `float32` for a full fine-tune). Use `--dtype bfloat16` and/or `--gradient-checkpointing` if VRAM-constrained. SmolVLA uses a 500M backbone and fits comfortably in 16 GB.
-
-**ACT only options** (ignored for SmolVLA / Pi0 / Pi0.5):
+**ACT only:**
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--chunk-size` | `100` | Number of future action steps predicted per forward pass |
-| `--n-obs-steps` | `1` | Number of observation steps used as input |
-| `--vision-backbone` | `resnet18` | ResNet image encoder: `resnet18`, `resnet34`, or `resnet50` |
-| `--use-vae` | enabled | Enable ACT's VAE action modeling component |
-| `--no-vae` | — | Disable the VAE for simpler/faster training |
+| `--chunk-size` | `100` | Future action steps per forward pass |
+| `--n-obs-steps` | `1` | Observation steps as input |
+| `--vision-backbone` | `resnet18` | `resnet18`, `resnet34`, or `resnet50` |
+| `--use-vae` / `--no-vae` | enabled | ACT VAE action modeling |
 
-ACT is a smaller transformer imitation-learning policy that predicts chunks of actions from visual observations and robot state. It is often faster to train and run than VLM-based policies, and is a good fit for longer manipulation sequences where chunked actions help smooth execution.
+**Model comparison:**
 
-| Aspect | SmolVLA | ACT |
-|--------|---------|-----|
-| Vision model | SmolVLM2-500M | ResNet18/34/50 |
-| Approx. size | 500M+ parameters | 10–25M parameters |
-| Action prediction | Single action step | Multi-step action chunks |
-| Training speed | Medium | Fast |
-| Best fit | Language-conditioned or short-horizon tasks | Fast long-horizon imitation learning |
+| Aspect | SmolVLA | Pi0 | ACT |
+|--------|---------|-----|-----|
+| Vision model | SmolVLM2-500M | PaliGemma 2B | ResNet18/34/50 |
+| Approx. size | 500M params | 2B+ params | 10–25M params |
+| Action output | Single step | Single step | Chunked |
+| VRAM (fp32) | ~16 GB | ~20–24 GB | <4 GB |
+| Best fit | Language-conditioned | Dexterous with language | Fast long-horizon IL |
 
-Common ACT configurations:
-
-```bash
-# Quick experiment
-uv --project ../lerobot run python main.py train \
-  --model-type act \
-  --dataset-root lerobot_datasets/001 \
-  --chunk-size 50 \
-  --batch-size 16 \
-  --steps 5000 \
-  --use-amp
-
-# Higher-capacity training
-uv --project ../lerobot run python main.py train \
-  --model-type act \
-  --dataset-root lerobot_datasets/001 \
-  --vision-backbone resnet50 \
-  --chunk-size 100 \
-  --batch-size 8 \
-  --steps 50000 \
-  --seed 42
-
-# Limited VRAM
-uv --project ../lerobot run python main.py train \
-  --model-type act \
-  --dataset-root lerobot_datasets/001 \
-  --vision-backbone resnet18 \
-  --chunk-size 50 \
-  --batch-size 2 \
-  --num-workers 2 \
-  --use-amp
-```
-
-### Standalone ACT Training
-
-For ACT-only experimentation, `train_act_standalone.py` exposes a smaller standalone CLI with an additional `--learning-rate` option:
-
-```bash
-uv --project ../lerobot run python train_act_standalone.py \
-  --dataset-root lerobot_datasets/001 \
-  --output-dir outputs/act_experiment \
-  --learning-rate 5e-5 \
-  --vision-backbone resnet50 \
-  --chunk-size 100 \
-  --batch-size 8 \
-  --steps 20000 \
-  --use-amp
-```
-
-ACT checkpoints are written under `outputs/<dataset>_act/` by default. The useful artifacts are usually:
-
-```text
-outputs/<dataset>_act/
-  train_config.json
-  checkpoint_*/              ← intermediate checkpoints
-  latest_checkpoint/         ← most recent checkpoint
-    config.json
-    policy_state_dict.pt
-    preprocessor/
-    postprocessor/
-```
-
-Quick ACT troubleshooting:
-
-| Problem | Try |
-|---------|-----|
-| CUDA out of memory | Reduce `--batch-size`, use `--vision-backbone resnet18`, reduce `--chunk-size`, and enable `--use-amp` |
-| Slow training | Use `resnet18`, enable `--use-amp`, or reduce `--num-workers` if loading is unstable |
-| Poor loss | Inspect episodes with `main.py label`, train longer, try `resnet50`, or disable VAE with `--no-vae` |
-| Weak generalization | Add more varied demonstrations, train longer, or increase backbone capacity |
+---
 
 ## Utilities
 
@@ -342,8 +461,7 @@ Quick ACT troubleshooting:
 
 ```bash
 uv --project ../lerobot run python src/smolvla_franka_setup.py \
-  --mode inspect \
-  --dataset-root lerobot_datasets/example
+  --mode inspect --dataset-root lerobot_datasets/example
 ```
 
 ### SmolVLA Inference Sanity Check
@@ -352,47 +470,57 @@ uv --project ../lerobot run python src/smolvla_franka_setup.py \
 uv --project ../lerobot run python src/smolvla_franka_setup.py --mode demo
 ```
 
-### Verify CUDA Torch
+### Verify CUDA / Torch
 
 ```bash
-uv --project ../lerobot run python -c "import torch; print(torch.__version__, torch.version.cuda, torch.cuda.is_available())"
+uv --project ../lerobot run python -c \
+  "import torch; print(torch.__version__, torch.version.cuda, torch.cuda.is_available())"
 ```
 
-## Franka Docker Notes (Optional)
+---
 
-Allow Docker to show windows on host:
+## Franka Robot Notes
+
+### Docker setup (optional)
 
 ```bash
 xhost +local:docker
-```
-
-Create and enter container:
-
-```bash
-docker run -it \
-  --name franka_noetic \
-  --net=host \
-  --privileged \
+docker run -it --name franka_noetic --net=host --privileged \
   -v ~/catkin_ws:/home/thomas/catkin_ws \
-  -e DISPLAY=$DISPLAY \
-  -v /tmp/.X11-unix:/tmp/.X11-unix \
-  osrf/ros:noetic-desktop-full \
-  bash
+  -e DISPLAY=$DISPLAY -v /tmp/.X11-unix:/tmp/.X11-unix \
+  osrf/ros:noetic-desktop-full bash
 ```
 
-```bash
-docker exec -it franka_noetic bash
-```
+### Pre-run checklist
 
-Before robot code:
-
-- Set host ethernet to manual IP `172.16.0.2`.
-- Confirm connectivity to robot: `ping 172.16.0.1`.
-- In Franka Desk at `https://172.16.0.1`, ensure `FCI` is active (blue), brakes are unlocked, and the external activation device is pressed.
-
-Launch driver in container:
+1. Host ethernet: manual IP `172.16.0.2`
+2. `ping 172.16.0.1` confirms connectivity
+3. Franka Desk at `https://172.16.0.1`: FCI active (blue), brakes unlocked, external activation device pressed
 
 ```bash
 source devel/setup.bash
 roslaunch franka_control franka_control.launch robot_ip:=172.16.0.1 load_gripper:=true
 ```
+
+### Safety envelope (`src/robot/franka_interface.py`)
+
+The `MockFrankaInterface` (used in dry-run and tests) enforces:
+
+| Condition | Action |
+|-----------|--------|
+| NaN or Inf in action | Reject, log to `outputs/safety_log.jsonl` |
+| Joint velocity > 2.0 rad/s | Reject |
+| EEF force > 30 N | Reject |
+| Gripper close cmd in `FREE_MOTION` phase | Reject |
+| Action outside workspace bounds | Reject |
+
+---
+
+## Key Design Constraints
+
+- **Never modify** existing files: `main.py`, `src/data_cleaner.py`, `src/data_converter.py`, `src/dataset_utils.py`, `src/labeler.py`, `src/create_labels.py`, `src/merge_datasets.py`, `src/train_act.py`, `src/train_pi0.py`, `src/smolvla_franka_setup.py`, and `scripts/00_run_params.sh` … `scripts/05_extract_from_scratch.sh`.
+- All new Python code goes under `src/<subpackage>/` with matching tests under `tests/`.
+- `scripts/` contains **shell scripts only**.
+- Phase IDs are always imported from `src/common/phases.py` — never hardcoded.
+- Annotated datasets live at `lerobot_datasets/<name>_annotated/` — the source dataset is never overwritten.
+- Gold annotations live in `data/gold/` and are the few-shot source of truth for Qwen prompts.

@@ -1,0 +1,26 @@
+# π0-subtask — pi0 trained with native subtask column conditioning.
+# Requires an annotated dataset (lerobot_datasets/<name>_annotated/).
+#
+# Invocation:
+#   python scripts/train_phase.py \\
+#       --config configs/training/pi0_subtask.yaml \\
+#       --dataset-name <name>
+#
+# This will internally call:
+#   main.py train --dataset-root lerobot_datasets/<name>_annotated \\
+#                 --model-type pi0 --batch-size 8 --steps 20000
+
+_base: configs/training/base.yaml
+
+model_type: pi0
+use_phase_conditioning: false
+use_subtask_column: true   # instructs train_phase.py to pass subtask column
+
+# Dataset path — annotated dataset required
+dataset_path: "lerobot_datasets/${dataset_name}_annotated"
+
+output_dir: "outputs/${dataset_name}_pi0_subtask"
+
+extra_train_args:
+  - "--dtype"
+  - "bfloat16"
