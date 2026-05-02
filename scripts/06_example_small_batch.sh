@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# Example: Small batch with annotation (5 datasets, single GPU)
+
+DATASET_NAMES="001 002 003 004 005"
+RAW_DATASETS_ROOT="raw_datasets"
+CLEANED_DATASETS_ROOT="cleaned_datasets"
+LEROBOT_DATASETS_ROOT="lerobot_datasets"
+OVERNIGHT_OUTPUT_DIR="overnight_output_small"
+
+ENABLE_ANNOTATION=true
+NUM_GPUS=1
+BATCH_SIZE_ANNOTATION=4
+MAX_EPISODES_PER_DATASET=""
+
+CAMERA_TOLERANCE_MS=150.0
+PRIMARY_CAMERA="ee_zed_m"
+
+CONTINUE_ON_ERROR=false
+ENABLE_CHECKPOINT=true
+LOG_LEVEL="INFO"
