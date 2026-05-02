@@ -1,53 +1,49 @@
-"""Annotate a cleaned_dataset (raw recording format) with phase + subtask labels.
+"""Batch annotation driver for cleaned datasets using Qwen3-VL.
 
-Works directly on the ``cleaned_datasets/<name>/`` directory produced by
-``main.py clean``.  Does NOT require the LeRobot v3 conversion step.
-
-Annotation strategy (in priority order):
-  1. Qwen3-VL (requires vLLM + GPU) — used when ``--use-qwen`` is set and vLLM is installed
-  2. Runtime FSM — deterministic, proprioception-only; always available
-
-Output (``cleaned_datasets/<output_name>/``):
-  - Copies all original files unchanged
-  - Adds ``annotations/<episode_NNN>.json`` per episode (EpisodeAnnotation JSON)
-  - Adds ``annotations_summary.json`` with aggregate stats
+Annotates all episodes in a cleaned dataset with labels using Qwen3-VL model via vLLM.
 
 Usage:
-    # FSM annotation (no GPU needed):
     python src/scripts/annotate_cleaned_dataset.py \\
-        --dataset-dir cleaned_datasets/102 \\
-        --output-name 102_qwen_tagged \\
-        --task pick_place
+        --dataset-root cleaned_datasets/001 \\
+        --task-name "robot_manipulation" \\
+        --output-dir outputs/annotations \\
+        --batch-size 4
 
-    # Qwen annotation (requires vLLM + GPU):
-    python src/scripts/annotate_cleaned_dataset.py \\
-        --dataset-dir cleaned_datasets/102 \\
-        --output-name 102_qwen_tagged \\
-        --task pick_place \\
-        --use-qwen
+Or from the pipeline:
+    annotate_cleaned_dataset(
+        dataset_root=Path("cleaned_datasets/001"),
+        task_name="robot_manipulation",
+        output_dir=Path("outputs/annotations"),
+        qwen_annotator=annotator,
+        batch_size=4,
+        logger=logger,
+    )
 """
+
 from __future__ import annotations
 
 import json
-import shutil
+import logging
 import sys
 from pathlib import Path
 from typing import Optional
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-import numpy as np
-import typer
-from rich.console import Console
-from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
-from rich.table import Table
+try:
+    import pandas as pd
+except ImportError:
+    pd = None
 
-from src.common.phases import Phase, PHASE_NAMES
-from src.annotation.schema import EpisodeAnnotation, PhaseSegment
-from src.annotation.validator import Validator
+try:
+    import numpy as np
+except ImportError:
+    np = None
+
+from rich.console import Console
+from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TimeRemainingColumn
 
 console = Console()
-app = typer.Typer(help="Annotate a cleaned_dataset with phase + subtask labels.")
 
 _GRIPPER_CLOSE_WIDTH_M = 0.035   # below this → gripper considered closed
 _MIN_EPISODE_DURATION_S = 1.0    # discard very short episodes

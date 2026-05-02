@@ -6,7 +6,7 @@ DEFAULT_LOCAL_PROJECT_ROOT="$(cd "${PARAMS_DIR}/.." && pwd)"
 
 # -------- Workflow identity --------
 # Set this explicitly for UCL remote paths/SSH, instead of relying on shell USER.
-WORKFLOW_USER="eredhead"
+WORKFLOW_USER="xparker"
 
 # -------- Project layout knobs --------
 # Remote project root is discovered from remote $HOME, then this dirname is used.
