@@ -6,7 +6,7 @@ DEFAULT_LOCAL_PROJECT_ROOT="$(cd "${PARAMS_DIR}/.." && pwd)"
 
 # -------- Workflow identity --------
 # Set this explicitly for UCL remote paths/SSH, instead of relying on shell USER.
-WORKFLOW_USER="eredhead"
+WORKFLOW_USER="xparker"
 
 # -------- Project layout knobs --------
 # Remote project root is discovered from remote $HOME, then this dirname is used.
@@ -47,7 +47,7 @@ ALLOW_MISSING_TASK_FALLBACK=true
 
 # -------- SSH topology --------
 REMOTE_USER="${WORKFLOW_USER}"
-GPU_NODE="hotrod.cs.ucl.ac.uk"
+GPU_NODE="bluestreak.cs.ucl.ac.uk"
 JUMP_HOST="knuckles.cs.ucl.ac.uk"
 # SSH key for passwordless access. Generate once with:
 #   ssh-keygen -t ed25519 -f ~/.ssh/ucl_key -N ""
