@@ -70,6 +70,13 @@ if [ -d "${SCRATCH_VENV}" ]; then
 		fi
 
 		# Pinned dependency set known to work with the target Python 3.12/vLLM setup
+		# Install transformers 4.57.0 (or from git if TRANSFORMERS_FROM_GIT was true and skipped above)
+		if [ "${TRANSFORMERS_FROM_GIT:-false}" != "true" ]; then
+			"${UV_BIN}" pip install --python "${SCRATCH_VENV}/bin/python" transformers==4.57.0 || {
+				echo "Failed to install transformers==4.57.0"
+				exit 1
+			}
+		fi
 		# prefer binary wheels for vllm to avoid source builds requiring nvcc
 		"${UV_BIN}" pip install --python "${SCRATCH_VENV}/bin/python" --only-binary :all: vllm==0.7.2 qwen-vl-utils==0.0.14 || {
 			echo "Partial/failed install - check disk quota or logs"
