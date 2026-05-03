@@ -177,6 +177,12 @@ else
     echo "    uv found: $(which uv) — $(uv --version)"
 fi
 
+# Ensure uv has the required Python version available locally.
+if ! uv python find "${PYTHON_VERSION}" >/dev/null 2>&1; then
+    echo "    Python ${PYTHON_VERSION} not found by uv. Installing it to scratch..."
+    uv python install "${PYTHON_VERSION}"
+fi
+
 # Confirm CUDA is visible to the system
 if command -v nvidia-smi &>/dev/null; then
     echo "    GPU detected:"
