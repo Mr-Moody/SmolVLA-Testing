@@ -27,6 +27,7 @@ set -euo pipefail
 REMOTE_SCRATCH_BASE="$1"
 REMOTE_USER="$2"
 INSTALL_DEPS="$3"
+UV_BIN="${REMOTE_SCRATCH_BASE}/bin/uv"
 
 echo "Running remote setup_scratch.sh..."
 bash ~/smolvla_project/SmolVLA-Testing/scripts/setup_scratch.sh
@@ -38,16 +39,20 @@ if [ -d "${SCRATCH_VENV}" ]; then
 	echo "Scratch venv found at: ${SCRATCH_VENV}"
 	"${SCRATCH_VENV}/bin/python3" -c 'import sys; print("  python:", sys.executable)'
 	if [ "${INSTALL_DEPS:-false}" = "true" ]; then
-		echo "INSTALL_DEPS=true - installing Qwen VL dependencies into scratch venv..."
-		echo "Setting cache environment variables to scratch..."
-		# Ensure caches and pip use scratch to avoid home quota
+		echo "INSTALL_DEPS=true - installing Qwen VL dependencies with uv into scratch venv..."
+		if [ ! -x "${UV_BIN}" ]; then
+			echo "ERROR: uv not found at ${UV_BIN}"
+			exit 1
+		fi
 		export PIP_CACHE_DIR="${REMOTE_SCRATCH_BASE}/.cache/pip"
 		export HF_HOME="${REMOTE_SCRATCH_BASE}/.cache/huggingface"
 		export TORCH_HOME="${REMOTE_SCRATCH_BASE}/.cache/torch"
 		export UV_CACHE_DIR="${REMOTE_SCRATCH_BASE}/.cache/uv"
 		mkdir -p "${PIP_CACHE_DIR}" "${HF_HOME}" "${TORCH_HOME}" "${UV_CACHE_DIR}"
-		"${SCRATCH_VENV}/bin/pip" install --upgrade pip setuptools wheel
-		"${SCRATCH_VENV}/bin/pip" install --no-cache-dir vllm>=0.7 qwen-vl-utils || echo "Partial/failed install - check disk quota or logs"
+		"${UV_BIN}" pip install --python "${SCRATCH_VENV}/bin/python" vllm>=0.7 qwen-vl-utils || {
+			echo "Partial/failed install - check disk quota or logs"
+			exit 1
+		}
 		echo "Verifying installation..."
 		"${SCRATCH_VENV}/bin/python3" -c "from vllm import LLM; from qwen_vl_utils import *; print('✓ Qwen dependencies installed in scratch venv')" || echo "Warning: verification failed"
 	else
