@@ -218,7 +218,7 @@ cd "${LEROBOT_ROOT}"
 # --extra dev      : training utilities (wandb, tensorboard, etc.) if present
 # Omit extras that don't exist in the lerobot version you have cloned.
 uv sync \
-    --python "${PYTHON_VERSION}" \
+    --python 3.13 \
     --extra smolvla \
     --extra dataset \
     --no-editable \
