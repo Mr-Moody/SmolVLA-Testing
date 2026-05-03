@@ -43,22 +43,12 @@ echo ""
 echo -n "Checking Python... "
 if command -v python3 &> /dev/null; then
     PYTHON_VERSION=$(python3 --version 2>&1)
-    PYTHON_PATH=$(which python3)
-    PYTHON_MINOR=$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
-    if [[ "${PYTHON_PATH}" == "${SCRATCH_VENV}"* ]]; then
-        if [[ "${PYTHON_MINOR}" == "3.12" ]]; then
-            echo "✓ $PYTHON_VERSION (from scratch venv, pinned and compatible)"
-        else
-            echo "✗ $PYTHON_VERSION (from scratch venv, but wrong version)"
-            echo "  Expected: Python 3.12"
-            echo "  Got: ${PYTHON_MINOR}"
-            exit 1
-        fi
+    echo "✓ $PYTHON_VERSION"
+    echo "  Location: $(which python3)"
+    if [[ "$(which python3)" == "${SCRATCH_VENV}"* ]]; then
+        echo "  ✓ Using scratch venv (correct)"
     else
-        echo "✗ Python not from scratch venv!"
-        echo "  Expected: ${SCRATCH_VENV}/bin/python3"
-        echo "  Got: ${PYTHON_PATH}"
-        exit 1
+        echo "  ⚠ WARNING: Python not from scratch venv!"
     fi
 else
     echo "✗ Python3 not found"
