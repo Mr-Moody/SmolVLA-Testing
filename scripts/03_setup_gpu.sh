@@ -50,8 +50,13 @@ if [ -d "${SCRATCH_VENV}" ]; then
 		export HF_HOME="${REMOTE_SCRATCH_BASE}/.cache/huggingface"
 		export TORCH_HOME="${REMOTE_SCRATCH_BASE}/.cache/torch"
 		export UV_CACHE_DIR="${REMOTE_SCRATCH_BASE}/.cache/uv"
-		mkdir -p "${PIP_CACHE_DIR}" "${HF_HOME}" "${TORCH_HOME}" "${UV_CACHE_DIR}"
-		"${UV_BIN}" pip install --python "${SCRATCH_VENV}/bin/python" vllm>=0.7 qwen-vl-utils || {
+		export UV_PYTHON_INSTALL_DIR="${REMOTE_SCRATCH_BASE}/.cache/uv/python"
+		mkdir -p "${PIP_CACHE_DIR}" "${HF_HOME}" "${TORCH_HOME}" "${UV_CACHE_DIR}" "${UV_PYTHON_INSTALL_DIR}"
+		"${UV_BIN}" pip install --python "${SCRATCH_VENV}/bin/python" --only-binary :all: vllm==0.7.2 || {
+			echo "Partial/failed install - check disk quota or logs"
+			exit 1
+		}
+		"${UV_BIN}" pip install --python "${SCRATCH_VENV}/bin/python" qwen-vl-utils || {
 			echo "Partial/failed install - check disk quota or logs"
 			exit 1
 		}
