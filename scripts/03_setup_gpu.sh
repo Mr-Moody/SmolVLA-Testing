@@ -56,6 +56,10 @@ if [ -d "${SCRATCH_VENV}" ]; then
 			echo "Partial/failed install - check disk quota or logs"
 			exit 1
 		}
+		"${UV_BIN}" pip install --python "${SCRATCH_VENV}/bin/python" qwen-vl-utils || {
+			echo "Partial/failed install - check disk quota or logs"
+			exit 1
+		}
 		echo "Verifying installation..."
 		"${SCRATCH_VENV}/bin/python3" -c "from vllm import LLM; from qwen_vl_utils import *; print('✓ Qwen dependencies installed in scratch venv')" || echo "Warning: verification failed"
 	else
