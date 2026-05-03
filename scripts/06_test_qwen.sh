@@ -18,14 +18,15 @@ set -e
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$PROJECT_ROOT"
 
-# Ensure we're using the scratch venv
+# Ensure we're using the exact scratch venv created by setup_scratch.sh
 SCRATCH_VENV="/scratch0/xparker/smolvla_venv"
 if [ ! -d "${SCRATCH_VENV}" ]; then
     echo "ERROR: Scratch venv not found at ${SCRATCH_VENV}"
+    echo "Run: INSTALL_DEPS=true bash scripts/03_setup_gpu.sh"
     exit 1
 fi
 
-# Activate the venv and set cache directories to scratch
+# Activate the venv and set ALL cache directories to scratch (critical!)
 source "${SCRATCH_VENV}/bin/activate"
 export PIP_CACHE_DIR="/scratch0/xparker/.cache/pip"
 export HF_HOME="/scratch0/xparker/.cache/huggingface"
@@ -35,6 +36,10 @@ export UV_CACHE_DIR="/scratch0/xparker/.cache/uv"
 echo "=========================================="
 echo "Qwen3-VL Server Test"
 echo "=========================================="
+echo "Scratch venv: ${SCRATCH_VENV}"
+echo "Python: $(which python3)"
+echo "Venv: ${VIRTUAL_ENV}"
+echo ""
 echo "Using Python: $(which python3)"
 echo "Venv: ${VIRTUAL_ENV}"
 echo ""
@@ -43,12 +48,14 @@ echo ""
 echo -n "Checking Python... "
 if command -v python3 &> /dev/null; then
     PYTHON_VERSION=$(python3 --version 2>&1)
-    echo "✓ $PYTHON_VERSION"
-    echo "  Location: $(which python3)"
-    if [[ "$(which python3)" == "${SCRATCH_VENV}"* ]]; then
-        echo "  ✓ Using scratch venv (correct)"
+    PYTHON_PATH=$(which python3)
+    if [[ "${PYTHON_PATH}" == "${SCRATCH_VENV}"* ]]; then
+        echo "✓ $PYTHON_VERSION (from scratch venv)"
     else
-        echo "  ⚠ WARNING: Python not from scratch venv!"
+        echo "✗ Python not from scratch venv!"
+        echo "  Expected: ${SCRATCH_VENV}/bin/python3"
+        echo "  Got: ${PYTHON_PATH}"
+        exit 1
     fi
 else
     echo "✗ Python3 not found"
@@ -57,19 +64,21 @@ fi
 
 # Check vLLM
 echo -n "Checking vLLM... "
-if python3 -c "from vllm import LLM" 2>/dev/null; then
-    echo "✓ vLLM installed"
+if python3 -c "from vllm import LLM; print(LLM.__module__)" 2>/dev/null; then
+    echo "✓ vLLM installed in scratch venv"
 else
-    echo "✗ vLLM not found. Install with: pip install vllm>=0.7"
+    echo "✗ vLLM not found in scratch venv"
+    echo "  Run: INSTALL_DEPS=true bash scripts/03_setup_gpu.sh"
     exit 1
 fi
 
 # Check Qwen utils
 echo -n "Checking Qwen utils... "
 if python3 -c "from qwen_vl_utils import *" 2>/dev/null; then
-    echo "✓ qwen-vl-utils installed"
+    echo "✓ qwen-vl-utils installed in scratch venv"
 else
-    echo "✗ qwen-vl-utils not found. Install with: pip install qwen-vl-utils"
+    echo "✗ qwen-vl-utils not found in scratch venv"
+    echo "  Run: INSTALL_DEPS=true bash scripts/03_setup_gpu.sh"
     exit 1
 fi
 
