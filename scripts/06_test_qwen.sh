@@ -51,11 +51,11 @@ if command -v python3 &> /dev/null; then
     PYTHON_PATH=$(which python3)
     PYTHON_MINOR=$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
     if [[ "${PYTHON_PATH}" == "${SCRATCH_VENV}"* ]]; then
-        if [[ "${PYTHON_MINOR}" == "3.13" ]]; then
+        if [[ "${PYTHON_MINOR}" == "3.12" ]]; then
             echo "✓ $PYTHON_VERSION (from scratch venv, pinned and compatible)"
         else
             echo "✗ $PYTHON_VERSION (from scratch venv, but wrong version)"
-            echo "  Expected: Python 3.13"
+            echo "  Expected: Python 3.12"
             echo "  Got: ${PYTHON_MINOR}"
             exit 1
         fi
