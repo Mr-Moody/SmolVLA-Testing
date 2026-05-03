@@ -22,12 +22,11 @@ echo ""
 # Run remote setup and ensure dependencies are installed in scratch venv using uv.
 # Dependency installation is opt-in: set INSTALL_DEPS=true when calling this script to install vllm/qwen-vl-utils.
 
-ssh ${SSH_OPTS} -J "${SSH_JUMP}" "${SSH_REMOTE}" "bash -s" <<REMOTE_EOF
+ssh ${SSH_OPTS} -J "${SSH_JUMP}" "${SSH_REMOTE}" \
+  REMOTE_SCRATCH_BASE="${REMOTE_SCRATCH_BASE}" \
+  REMOTE_USER="${REMOTE_USER}" \
+  bash -s <<'REMOTE_EOF'
 set -euo pipefail
-
-# Local-supplied value for remote scratch base
-REMOTE_SCRATCH_BASE="${REMOTE_SCRATCH_BASE}"
-REMOTE_USER="${REMOTE_USER}"
 
 echo "Running remote setup_scratch.sh..."
 bash ~/smolvla_project/SmolVLA-Testing/scripts/setup_scratch.sh
