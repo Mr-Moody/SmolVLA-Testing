@@ -31,19 +31,24 @@ echo "Running remote setup_scratch.sh..."
 bash ~/smolvla_project/SmolVLA-Testing/scripts/setup_scratch.sh
 
 # Locate and use the scratch venv for dependency installation.
-SCRATCH_VENV="${REMOTE_SCRATCH_BASE}/lerobot/.venv"
+# Note: setup_scratch.sh creates VENV_DIR="${SCRATCH_BASE}/smolvla_venv"
+SCRATCH_VENV="${REMOTE_SCRATCH_BASE}/smolvla_venv"
 if [ -d "${SCRATCH_VENV}" ]; then
 	echo "Scratch venv found at: ${SCRATCH_VENV}"
 	"${SCRATCH_VENV}/bin/python3" -c 'import sys; print("  python:", sys.executable)'
 	if [ "${INSTALL_DEPS:-false}" = "true" ]; then
-		echo "INSTALL_DEPS=true - installing Qwen VL dependencies using uv..."
-		/scratch0/${REMOTE_USER}/bin/uv pip install --python "${SCRATCH_VENV}/bin/python" vllm>=0.7 qwen-vl-utils || echo "Partial/failed install - check disk quota or logs"
+		echo "INSTALL_DEPS=true - installing Qwen VL dependencies into scratch venv..."
+		echo "Setting cache environment variables to scratch..."
+		"${SCRATCH_VENV}/bin/pip" install --upgrade pip setuptools wheel
+		"${SCRATCH_VENV}/bin/pip" install --no-cache-dir vllm>=0.7 qwen-vl-utils || echo "Partial/failed install - check disk quota or logs"
+		echo "Verifying installation..."
+		"${SCRATCH_VENV}/bin/python3" -c "from vllm import LLM; from qwen_vl_utils import *; print('✓ Qwen dependencies installed in scratch venv')" || echo "Warning: verification failed"
 	else
 		echo "INSTALL_DEPS not set to true; skipping dependency installation."
 		echo "To install deps, re-run with: INSTALL_DEPS=true bash scripts/03_setup_gpu.sh"
 	fi
 else
-	echo "WARNING: Expected scratch venv at ${SCRATCH_VENV} but not found."
+	echo "ERROR: Expected scratch venv at ${SCRATCH_VENV} but not found."
 	echo "Check that setup_scratch.sh ran successfully and created the venv."
 	exit 1
 fi

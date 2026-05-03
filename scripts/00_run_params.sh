@@ -22,6 +22,7 @@ SAVE_FREQ=1000
 # -------- Preprocessing controls --------
 # If true, convert cleaned_datasets -> lerobot_datasets on GPU right before training.
 PREPROCESS_ON_GPU=false
+LOCAL_CLEANED_DATA_SOURCE="${LOCAL_PROJECT_ROOT}/cleaned_datasets"
 REMOTE_CLEANED_DATASET_ROOT="/scratch0/${WORKFLOW_USER}/cleaned_datasets"
 PREPROCESS_VCODEC="h264_nvenc"
 # -------- Training hyperparameters --------
