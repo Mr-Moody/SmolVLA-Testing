@@ -18,29 +18,23 @@ set -e
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$PROJECT_ROOT"
 
-# Ensure we're using the exact scratch venv created by setup_scratch.sh
+# Ensure we're using the scratch venv
 SCRATCH_VENV="/scratch0/xparker/smolvla_venv"
 if [ ! -d "${SCRATCH_VENV}" ]; then
     echo "ERROR: Scratch venv not found at ${SCRATCH_VENV}"
-    echo "Run: INSTALL_DEPS=true bash scripts/03_setup_gpu.sh"
     exit 1
 fi
 
-# Activate the venv and set ALL cache directories to scratch (critical!)
+# Activate the venv and set cache directories to scratch
 source "${SCRATCH_VENV}/bin/activate"
 export PIP_CACHE_DIR="/scratch0/xparker/.cache/pip"
 export HF_HOME="/scratch0/xparker/.cache/huggingface"
 export TORCH_HOME="/scratch0/xparker/.cache/torch"
 export UV_CACHE_DIR="/scratch0/xparker/.cache/uv"
-export VLLM_MEMORY_PROFILER_ESTIMATE_CUDAGRAPHS=1
 
 echo "=========================================="
 echo "Qwen3-VL Server Test"
 echo "=========================================="
-echo "Scratch venv: ${SCRATCH_VENV}"
-echo "Python: $(which python3)"
-echo "Venv: ${VIRTUAL_ENV}"
-echo ""
 echo "Using Python: $(which python3)"
 echo "Venv: ${VIRTUAL_ENV}"
 echo ""
