@@ -44,6 +44,12 @@ echo -n "Checking Python... "
 if command -v python3 &> /dev/null; then
     PYTHON_VERSION=$(python3 --version 2>&1)
     echo "✓ $PYTHON_VERSION"
+    echo "  Location: $(which python3)"
+    if [[ "$(which python3)" == "${SCRATCH_VENV}"* ]]; then
+        echo "  ✓ Using scratch venv (correct)"
+    else
+        echo "  ⚠ WARNING: Python not from scratch venv!"
+    fi
 else
     echo "✗ Python3 not found"
     exit 1
