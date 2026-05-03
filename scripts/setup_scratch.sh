@@ -56,7 +56,7 @@ SCRATCH_BASE="/scratch0/${USER}"
 VENV_DIR="${SCRATCH_BASE}/smolvla_venv"
 
 # Python version pinned for vllm/numba compatibility.
-PYTHON_VERSION="3.13"
+PYTHON_VERSION="3.12"
 
 # All caches redirected to scratch — CRITICAL to set before any install step
 CACHE_DIR="${SCRATCH_BASE}/.cache"
