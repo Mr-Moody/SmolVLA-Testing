@@ -190,10 +190,12 @@ echo ""
 cd "${LEROBOT_ROOT}"
 
 # Sync the lerobot project with all extras needed for SmolVLA fine-tuning.
+# Use Python 3.13 explicitly (compatible with numba, vllm, PyTorch, etc.)
 # --extra smolvla  : SmolVLA policy and its vision-language deps
 # --extra dev      : training utilities (wandb, tensorboard, etc.) if present
 # Omit extras that don't exist in the lerobot version you have cloned.
 uv sync \
+    --python 3.13 \
     --extra smolvla \
     --extra dataset \
     --no-editable \
