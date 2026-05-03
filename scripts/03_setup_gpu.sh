@@ -52,16 +52,21 @@ if [ -d "${SCRATCH_VENV}" ]; then
 		export UV_CACHE_DIR="${REMOTE_SCRATCH_BASE}/.cache/uv"
 		export UV_PYTHON_INSTALL_DIR="${REMOTE_SCRATCH_BASE}/.cache/uv/python"
 		mkdir -p "${PIP_CACHE_DIR}" "${HF_HOME}" "${TORCH_HOME}" "${UV_CACHE_DIR}" "${UV_PYTHON_INSTALL_DIR}"
-		"${UV_BIN}" pip install --python "${SCRATCH_VENV}/bin/python" --only-binary :all: vllm==0.7.2 || {
-			echo "Partial/failed install - check disk quota or logs"
-			exit 1
-		}
-		"${UV_BIN}" pip install --python "${SCRATCH_VENV}/bin/python" qwen-vl-utils || {
+		# Pinned dependency set known to work with the target Python 3.12/vLLM setup
+		# - vllm: prefer binary wheels to avoid source builds requiring nvcc
+		# - qwen-vl-utils: pinned to match lerobot extras
+		# - transformers/tokenizers/huggingface_hub: pins from lerobot requirements to keep compatibility
+		"${UV_BIN}" pip install --python "${SCRATCH_VENV}/bin/python" --only-binary :all: \
+			vllm==0.7.2 \
+			qwen-vl-utils==0.0.14 \
+			transformers==5.3.0 \
+			tokenizers==0.22.2 \
+			huggingface_hub==1.11.0 || {
 			echo "Partial/failed install - check disk quota or logs"
 			exit 1
 		}
 		echo "Verifying installation..."
-		"${SCRATCH_VENV}/bin/python3" -c "from vllm import LLM; from qwen_vl_utils import *; print('✓ Qwen dependencies installed in scratch venv')" || echo "Warning: verification failed"
+			"${SCRATCH_VENV}/bin/python3" -c "import sys; from vllm import LLM; import qwen_vl_utils as qvu; import transformers, tokenizers, huggingface_hub; print('✓ Qwen dependencies installed in scratch venv', sys.version)" || echo "Warning: verification failed"
 	else
 		echo "INSTALL_DEPS not set to true; skipping dependency installation."
 		echo "To install deps, re-run with: INSTALL_DEPS=true bash scripts/03_setup_gpu.sh"
