@@ -51,11 +51,13 @@ if command -v python3 &> /dev/null; then
     PYTHON_PATH=$(which python3)
     PYTHON_MINOR=$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
     if [[ "${PYTHON_PATH}" == "${SCRATCH_VENV}"* ]]; then
-        if [[ "${PYTHON_MINOR}" == "3.13" || "${PYTHON_MINOR}" == "3.12" || "${PYTHON_MINOR}" == "3.11" ]]; then
-            echo "✓ $PYTHON_VERSION (from scratch venv, compatible)"
+        if [[ "${PYTHON_MINOR}" == "3.13" ]]; then
+            echo "✓ $PYTHON_VERSION (from scratch venv, pinned and compatible)"
         else
-            echo "⚠ $PYTHON_VERSION (from scratch venv, but may not be compatible with numba/vllm)"
-            echo "  Recommended: Python 3.13 or 3.12"
+            echo "✗ $PYTHON_VERSION (from scratch venv, but wrong version)"
+            echo "  Expected: Python 3.13"
+            echo "  Got: ${PYTHON_MINOR}"
+            exit 1
         fi
     else
         echo "✗ Python not from scratch venv!"

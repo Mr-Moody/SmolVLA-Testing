@@ -55,6 +55,9 @@ SCRATCH_BASE="/scratch0/${USER}"
 # Where the uv-managed venv will live (on fast local disk)
 VENV_DIR="${SCRATCH_BASE}/smolvla_venv"
 
+# Python version pinned for vllm/numba compatibility.
+PYTHON_VERSION="3.13"
+
 # All caches redirected to scratch — CRITICAL to set before any install step
 CACHE_DIR="${SCRATCH_BASE}/.cache"
 
@@ -98,6 +101,7 @@ echo "================================================================="
 echo "  User       : ${USER}"
 echo "  Scratch    : ${SCRATCH_BASE}"
 echo "  Venv       : ${VENV_DIR}"
+echo "  Python     : ${PYTHON_VERSION}"
 echo "  HF cache   : ${HF_HOME}"
 echo "  lerobot    : ${LEROBOT_ROOT}"
 echo "================================================================="
@@ -121,6 +125,19 @@ mkdir -p "${CACHE_DIR}/torch/hub/checkpoints"
 mkdir -p "${HOME_PROJECT}/checkpoints"
 
 echo "    OK — scratch directories created."
+
+# If a venv already exists but is not using Python 3.13, remove it so uv can
+# recreate it with the pinned interpreter.
+if [[ -x "${VENV_DIR}/bin/python3" ]]; then
+    CURRENT_PYTHON_VERSION="$(${VENV_DIR}/bin/python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")' 2>/dev/null || true)"
+    if [[ "${CURRENT_PYTHON_VERSION}" != "${PYTHON_VERSION}" ]]; then
+        echo "    Existing venv uses Python ${CURRENT_PYTHON_VERSION:-unknown}; recreating with Python ${PYTHON_VERSION}..."
+        rm -rf "${VENV_DIR}"
+        mkdir -p "${VENV_DIR}"
+    else
+        echo "    Existing venv already uses Python ${PYTHON_VERSION}."
+    fi
+fi
 
 # ---------------------------------------------------------------------------
 # 3. VERIFY PRE-CONDITIONS
@@ -195,7 +212,7 @@ cd "${LEROBOT_ROOT}"
 # --extra dev      : training utilities (wandb, tensorboard, etc.) if present
 # Omit extras that don't exist in the lerobot version you have cloned.
 uv sync \
-    --python 3.13 \
+    --python "${PYTHON_VERSION}" \
     --extra smolvla \
     --extra dataset \
     --no-editable \
