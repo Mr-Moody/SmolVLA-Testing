@@ -16,6 +16,8 @@ echo "Running GPU environment setup..."
 echo "Code dir (home): ${CODE_DIR}"
 echo "Home project dir: ${HOME_PROJECT_DIR}"
 echo "Scratch base: ${REMOTE_SCRATCH_BASE}"
+echo "Python version: 3.13 (compatible with vllm, numba, PyTorch)"
+echo ""
 
 # Run remote setup and ensure dependencies are installed in scratch venv using uv.
 # Dependency installation is opt-in: set INSTALL_DEPS=true when calling this script to install vllm/qwen-vl-utils.
