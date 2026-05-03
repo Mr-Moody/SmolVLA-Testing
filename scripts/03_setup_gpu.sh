@@ -20,12 +20,13 @@ echo "Scratch base: ${REMOTE_SCRATCH_BASE}"
 # Run remote setup and ensure dependencies are installed in scratch venv using uv.
 # Dependency installation is opt-in: set INSTALL_DEPS=true when calling this script to install vllm/qwen-vl-utils.
 
-ssh ${SSH_OPTS} -J "${SSH_JUMP}" "${SSH_REMOTE}" bash -s "${REMOTE_SCRATCH_BASE}" "${REMOTE_USER}" <<'REMOTE_EOF'
+ssh ${SSH_OPTS} -J "${SSH_JUMP}" "${SSH_REMOTE}" bash -s "${REMOTE_SCRATCH_BASE}" "${REMOTE_USER}" "${INSTALL_DEPS:-false}" <<'REMOTE_EOF'
 set -euo pipefail
 
 # Arguments passed from local script
 REMOTE_SCRATCH_BASE="$1"
 REMOTE_USER="$2"
+INSTALL_DEPS="$3"
 
 echo "Running remote setup_scratch.sh..."
 bash ~/smolvla_project/SmolVLA-Testing/scripts/setup_scratch.sh
@@ -39,6 +40,12 @@ if [ -d "${SCRATCH_VENV}" ]; then
 	if [ "${INSTALL_DEPS:-false}" = "true" ]; then
 		echo "INSTALL_DEPS=true - installing Qwen VL dependencies into scratch venv..."
 		echo "Setting cache environment variables to scratch..."
+		# Ensure caches and pip use scratch to avoid home quota
+		export PIP_CACHE_DIR="${REMOTE_SCRATCH_BASE}/.cache/pip"
+		export HF_HOME="${REMOTE_SCRATCH_BASE}/.cache/huggingface"
+		export TORCH_HOME="${REMOTE_SCRATCH_BASE}/.cache/torch"
+		export UV_CACHE_DIR="${REMOTE_SCRATCH_BASE}/.cache/uv"
+		mkdir -p "${PIP_CACHE_DIR}" "${HF_HOME}" "${TORCH_HOME}" "${UV_CACHE_DIR}"
 		"${SCRATCH_VENV}/bin/pip" install --upgrade pip setuptools wheel
 		"${SCRATCH_VENV}/bin/pip" install --no-cache-dir vllm>=0.7 qwen-vl-utils || echo "Partial/failed install - check disk quota or logs"
 		echo "Verifying installation..."
