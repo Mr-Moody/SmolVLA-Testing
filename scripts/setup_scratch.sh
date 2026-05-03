@@ -56,7 +56,7 @@ SCRATCH_BASE="/scratch0/${USER}"
 VENV_DIR="${SCRATCH_BASE}/smolvla_venv"
 
 # Python version pinned for vllm/numba compatibility.
-PYTHON_VERSION="3.12"
+PYTHON_VERSION="3.13"
 
 # All caches redirected to scratch — CRITICAL to set before any install step
 CACHE_DIR="${SCRATCH_BASE}/.cache"
@@ -218,7 +218,7 @@ cd "${LEROBOT_ROOT}"
 # --extra dev      : training utilities (wandb, tensorboard, etc.) if present
 # Omit extras that don't exist in the lerobot version you have cloned.
 uv sync \
-    --python 3.13 \
+    --python "${PYTHON_VERSION}" \
     --extra smolvla \
     --extra dataset \
     --no-editable \
