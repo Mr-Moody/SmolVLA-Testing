@@ -14,12 +14,11 @@ WORKFLOW_USER="xparker"
 REMOTE_PROJECT_DIRNAME="smolvla_project"
 
 # -------- Core run controls --------
-# Run SmolVLA first (pipeline validation), then re-run with MODEL_TYPE="act" for ACT.
-MODEL_TYPE="smolvla"  # smolvla | act
-RUN_NAME="test_qwen_data"
-DATASET_NAMES=(qwen_data)
-DATASET_ROOT="/scratch0/${WORKFLOW_USER}/cleaned_datasets"
-SAVE_FREQ=50
+MODEL_TYPE="act"  # smolvla | act
+RUN_NAME="test_qwen"
+DATASET_NAMES=("qwen_data")
+DATASET_ROOT="/scratch0/${WORKFLOW_USER}/lerobot_datasets"
+SAVE_FREQ=1000
 
 # -------- Preprocessing controls --------
 # If true, convert cleaned_datasets -> lerobot_datasets on GPU right before training.

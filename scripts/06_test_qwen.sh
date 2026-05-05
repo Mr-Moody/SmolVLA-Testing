@@ -32,6 +32,7 @@ export PIP_CACHE_DIR="/scratch0/xparker/.cache/pip"
 export HF_HOME="/scratch0/xparker/.cache/huggingface"
 export TORCH_HOME="/scratch0/xparker/.cache/torch"
 export UV_CACHE_DIR="/scratch0/xparker/.cache/uv"
+export VLLM_MEMORY_PROFILER_ESTIMATE_CUDAGRAPHS=1
 
 echo "=========================================="
 echo "Qwen3-VL Server Test"
