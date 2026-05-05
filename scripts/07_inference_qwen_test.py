@@ -90,6 +90,37 @@ def save_frames_temp(frames, temp_dir="/tmp"):
     return temp_files
 
 
+def get_video_frame_count(video_path):
+    try:
+        import cv2
+    except ImportError:
+        return 0
+
+    cap = cv2.VideoCapture(str(video_path))
+    try:
+        return int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    finally:
+        cap.release()
+
+
+def extract_frame_at_index(video_path, frame_index):
+    try:
+        import cv2
+    except ImportError:
+        print("ERROR: opencv-python not installed. Install with: pip install opencv-python")
+        return None
+
+    cap = cv2.VideoCapture(str(video_path))
+    try:
+        cap.set(cv2.CAP_PROP_POS_FRAMES, frame_index)
+        ret, frame = cap.read()
+        if not ret:
+            return None
+        return frame
+    finally:
+        cap.release()
+
+
 def find_video_sources(video_path=None):
     if video_path:
         return [Path(video_path)]
@@ -141,82 +172,99 @@ def main():
         "Reply with one short object name per line, no extra commentary."
     )
 
+    from vllm import LLM, SamplingParams
+    from qwen_vl_utils import process_vision_info
+
+    try:
+        llm = LLM(
+            model="Qwen/Qwen3-VL-4B-Instruct",
+            tensor_parallel_size=1,
+            gpu_memory_utilization=args.gpu_mem_util,
+            max_model_len=args.max_model_len,
+            trust_remote_code=True,
+            limit_mm_per_prompt={"image": 3},
+        )
+    except Exception as e:
+        print(f"ERROR: Failed to initialize model: {e}")
+        sys.exit(1)
+
+    tokenizer = llm.get_tokenizer()
+    sampling_params = SamplingParams(max_tokens=64, temperature=0.0, repetition_penalty=1.05)
+
+    frame_count = min(get_video_frame_count(video_path) for video_path in video_paths)
+    if frame_count <= 0:
+        print("ERROR: Could not determine video frame count")
+        sys.exit(1)
+
+    if args.frames_to_extract <= 0 or args.frames_to_extract >= frame_count:
+        frame_indices = list(range(frame_count))
+        print(f"Processing all synchronized timestamps: {frame_count}\n")
+    else:
+        frame_indices = [int(i * frame_count / args.frames_to_extract) for i in range(args.frames_to_extract)]
+        print(f"Processing {len(frame_indices)} synchronized timestamps sampled from {frame_count} total\n")
+
     all_objects = []
 
-    for source_index, video_path in enumerate(video_paths, start=1):
-        print(f"Video {source_index}/{len(video_paths)}: {video_path}")
-        if args.frames_to_extract <= 0:
-            print("Extracting all frames...\n")
-        else:
-            print(f"Extracting {args.frames_to_extract} frames...\n")
+    for frame_index in frame_indices:
+        frames_at_timestamp = []
+        temp_files = []
 
-        frames = extract_frames(
-            str(video_path),
-            num_frames=None if args.frames_to_extract <= 0 else args.frames_to_extract,
-        )
-        if not frames:
-            print("Could not extract frames")
+        for video_path in video_paths:
+            frame = extract_frame_at_index(video_path, frame_index)
+            if frame is None:
+                print(f"[Frame {frame_index + 1}/{frame_count}] WARNING: missing frame in {video_path}")
+                continue
+            frames_at_timestamp.append(frame)
+
+        if len(frames_at_timestamp) != len(video_paths):
+            print(f"[Frame {frame_index + 1}/{frame_count}] Skipping incomplete camera trio")
+            continue
+
+        temp_files = save_frames_temp(frames_at_timestamp)
+        if len(temp_files) != len(video_paths):
+            print(f"[Frame {frame_index + 1}/{frame_count}] ERROR: Could not save frames for inference")
+            for fpath in temp_files:
+                try:
+                    Path(fpath).unlink(missing_ok=True)
+                except Exception:
+                    pass
             sys.exit(1)
 
-        print(f"✓ Extracted {len(frames)} frames\n")
-
-        from vllm import LLM, SamplingParams
-        from qwen_vl_utils import process_vision_info
+        print(f"[Frame {frame_index + 1}/{frame_count}] " + " | ".join(temp_files))
 
         try:
-            llm = LLM(
-                model="Qwen/Qwen3-VL-4B-Instruct",
-                tensor_parallel_size=1,
-                gpu_memory_utilization=args.gpu_mem_util,
-                max_model_len=args.max_model_len,
-                trust_remote_code=True,
-                limit_mm_per_prompt={"image": 1},
+            messages = [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "image", "image": temp_files[0]},
+                        {"type": "image", "image": temp_files[1]},
+                        {"type": "image", "image": temp_files[2]},
+                        {"type": "text", "text": user_prompt},
+                    ],
+                }
+            ]
+
+            text = tokenizer.apply_chat_template(
+                messages, tokenize=False, add_generation_prompt=True
             )
-        except Exception as e:
-            print(f"ERROR: Failed to initialize model: {e}")
-            sys.exit(1)
+            image_inputs, video_inputs = process_vision_info(messages)
+            outputs = llm.generate(
+                [{"prompt": text, "multi_modal_data": {"image": image_inputs}}],
+                sampling_params=sampling_params,
+            )
 
-        tokenizer = llm.get_tokenizer()
-        sampling_params = SamplingParams(max_tokens=64, temperature=0.0, repetition_penalty=1.05)
+            result_text = ""
+            if outputs and outputs[0].outputs:
+                result_text = outputs[0].outputs[0].text.strip()
 
-        temp_files = save_frames_temp(frames)
-        if not temp_files:
-            print("ERROR: Could not save frames for inference")
-            sys.exit(1)
+            print(result_text if result_text else "(no output)")
 
-        try:
-            for frame_index, frame_path in enumerate(temp_files, start=1):
-                print(f"[Frame {frame_index}/{len(temp_files)}] {frame_path}")
-                messages = [
-                    {
-                        "role": "user",
-                        "content": [
-                            {"type": "image", "image": frame_path},
-                            {"type": "text", "text": user_prompt},
-                        ],
-                    }
-                ]
-
-                text = tokenizer.apply_chat_template(
-                    messages, tokenize=False, add_generation_prompt=True
-                )
-                image_inputs, video_inputs = process_vision_info(messages)
-                outputs = llm.generate(
-                    [{"prompt": text, "multi_modal_data": {"image": image_inputs}}],
-                    sampling_params=sampling_params,
-                )
-
-                result_text = ""
-                if outputs and outputs[0].outputs:
-                    result_text = outputs[0].outputs[0].text.strip()
-
-                print(result_text if result_text else "(no output)")
-
-                lines = [l.strip() for l in result_text.replace(',', '\n').splitlines() if l.strip()]
-                for line in lines:
-                    obj = line.lstrip('- ').lstrip('0123456789. ').strip()
-                    if obj and obj.lower() not in [u.lower() for u in all_objects]:
-                        all_objects.append(obj)
+            lines = [l.strip() for l in result_text.replace(',', '\n').splitlines() if l.strip()]
+            for line in lines:
+                obj = line.lstrip('- ').lstrip('0123456789. ').strip()
+                if obj and obj.lower() not in [u.lower() for u in all_objects]:
+                    all_objects.append(obj)
         finally:
             for fpath in temp_files:
                 try:
