@@ -399,10 +399,10 @@ class SmolVLADatasetConverter:
         return names
 
     def _action_dimension_names(self) -> list[str]:
-        """Build action dimension names for next joint targets plus gripper command."""
+        """Build action dimension names for commanded joint targets plus gripper command."""
         rs = self.robot_rows[0]["robot_state"]
         names: list[str] = []
-        names += [f"next_q_{i}" for i in range(len(rs.get("q", [])))]
+        names += [f"q_cmd_{i}" for i in range(len(rs.get("q_cmd", [])))]
         names += ["gripper_command"]
         return names
 
@@ -455,12 +455,12 @@ class SmolVLADatasetConverter:
                 details,
             )
 
-    def _action_vector(self, row: dict[str, Any], next_row: dict[str, Any]) -> np.ndarray:
-        next_q = [float(v) for v in next_row["robot_state"].get("q", [])]
-        if not next_q:
-            raise KeyError("next robot_state.q was missing; cannot build action")
+    def _action_vector(self, row: dict[str, Any], _next_row: dict[str, Any]) -> np.ndarray:
+        q_cmd = [float(v) for v in row["robot_state"].get("q_cmd", [])]
+        if not q_cmd:
+            raise KeyError("robot_state.q_cmd was missing; cannot build action")
         gripper = [float(row.get("executed_action", {}).get("gripper_command", 0.0))]
-        action = next_q + gripper
+        action = q_cmd + gripper
         return np.asarray(action, dtype=np.float32)
 
     def _episode_quality(self, steps: list[dict[str, Any]]) -> EpisodeQuality:
@@ -662,7 +662,7 @@ class SmolVLADatasetConverter:
                 robot_slice = robot_slice[: self.max_steps_per_episode]
             if len(robot_slice) < 2:
                 LOGGER.warning(
-                    "Skipping episode %d: need at least 2 robot rows to build next-q action targets, got %d.",
+                    "Skipping episode %d: need at least 2 robot rows to build action targets, got %d.",
                     episode_index,
                     len(robot_slice),
                 )
