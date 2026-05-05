@@ -172,7 +172,8 @@ def main():
     print("Loading Qwen model and running frame-by-frame object identification...")
 
     user_prompt = (
-        "List every distinct object visible in this camera view. "
+        "You will receive synchronized images from both cameras at the same timestamp. "
+        "Inspect both views together and list every distinct object visible in either view. "
         "Reply with one short object name per line, no extra commentary."
     )
 
