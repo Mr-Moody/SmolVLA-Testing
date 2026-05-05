@@ -29,7 +29,7 @@ class QwenAnnotator:
         model_id: Optional[str] = None,
         tensor_parallel_size: int = 1,
         gpu_memory_utilization: float = 0.90,
-        max_model_len: int = 32768,
+        max_model_len: int = 4096,
     ):
         self._model_id = model_id
         self._tensor_parallel_size = tensor_parallel_size
