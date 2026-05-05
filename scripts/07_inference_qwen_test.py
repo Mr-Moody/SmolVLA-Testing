@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Test script: Load Qwen3-VL-4B and identify objects from a single video.
-Video shows objects one-by-one; model describes/identifies each.
+Test script: Load Qwen3-VL-4B and identify objects frame by frame.
+The model is run on each extracted frame and the results are aggregated.
 
 Usage (on remote):
   python3 scripts/07_inference_qwen_test.py \
@@ -25,8 +25,12 @@ for path in (PROJECT_ROOT, SRC_DIR):
     if path_str not in sys.path:
         sys.path.insert(0, path_str)
 
-def extract_frames(video_path, num_frames=10):
-    """Extract evenly-spaced frames from a video file."""
+def extract_frames(video_path, num_frames=None):
+    """Extract frames from a video file.
+
+    If num_frames is None, extract every frame.
+    Otherwise, sample evenly spaced frames.
+    """
     try:
         import cv2
     except ImportError:
@@ -44,16 +48,21 @@ def extract_frames(video_path, num_frames=10):
         
         print(f"  Total frames in video: {total_frames}")
         
-        # Extract evenly-spaced frames
-        frame_indices = [int(i * total_frames / num_frames) for i in range(num_frames)]
         frames = []
-        frame_paths = []
-        
-        for idx in frame_indices:
-            cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
-            ret, frame = cap.read()
-            if ret:
+
+        if num_frames is None or num_frames >= total_frames:
+            while True:
+                ret, frame = cap.read()
+                if not ret:
+                    break
                 frames.append(frame)
+        else:
+            frame_indices = [int(i * total_frames / num_frames) for i in range(num_frames)]
+            for idx in frame_indices:
+                cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
+                ret, frame = cap.read()
+                if ret:
+                    frames.append(frame)
         
         cap.release()
         return frames
@@ -105,8 +114,8 @@ def main():
     parser.add_argument("--video-path", 
                         default=None,
                         help="Path to video file (auto-detect if not provided)")
-    parser.add_argument("--frames-to-extract", type=int, default=10,
-                        help="Number of frames to extract from video")
+    parser.add_argument("--frames-to-extract", type=int, default=0,
+                        help="Number of frames to extract from video; 0 means all frames")
     parser.add_argument("--gpu-mem-util", type=float, default=0.98,
                         help="GPU memory utilization (0.0-1.0)")
     parser.add_argument("--max-model-len", type=int, default=1024,
@@ -123,19 +132,7 @@ def main():
         print(f" - {video_path}")
     print("")
 
-    print("Loading Qwen annotator and running video-level object identification...")
-    from annotation.serve_qwen import QwenAnnotator
-
-    try:
-        annotator = QwenAnnotator(
-            model_id=None,
-            tensor_parallel_size=1,
-            gpu_memory_utilization=args.gpu_mem_util,
-            max_model_len=args.max_model_len,
-        )
-    except Exception as e:
-        print(f"ERROR: Failed to initialize annotator: {e}")
-        sys.exit(1)
+    print("Loading Qwen model and running frame-by-frame object identification...")
 
     user_prompt = (
         "List every distinct object visible in this camera view. "
@@ -146,31 +143,87 @@ def main():
 
     for source_index, video_path in enumerate(video_paths, start=1):
         print(f"Video {source_index}/{len(video_paths)}: {video_path}")
-        print(f"Extracting {args.frames_to_extract} frames...\n")
+        if args.frames_to_extract <= 0:
+            print("Extracting all frames...\n")
+        else:
+            print(f"Extracting {args.frames_to_extract} frames...\n")
 
-        frames = extract_frames(str(video_path), num_frames=args.frames_to_extract)
+        frames = extract_frames(
+            str(video_path),
+            num_frames=None if args.frames_to_extract <= 0 else args.frames_to_extract,
+        )
         if not frames:
             print("Could not extract frames")
             sys.exit(1)
 
         print(f"✓ Extracted {len(frames)} frames\n")
 
-        try:
-            result_text = annotator.annotate_episode(str(video_path), user_prompt, max_tokens=512)
-            print("Model output:\n")
-            print(result_text)
+        from vllm import LLM, SamplingParams
+        from qwen_vl_utils import process_vision_info
 
-            lines = [l.strip() for l in result_text.replace(',', '\n').splitlines() if l.strip()]
-            for line in lines:
-                obj = line.lstrip('- ').lstrip('0123456789. ').strip()
-                if obj and obj.lower() not in [u.lower() for u in all_objects]:
-                    all_objects.append(obj)
+        try:
+            llm = LLM(
+                model="Qwen/Qwen3-VL-4B-Instruct",
+                tensor_parallel_size=1,
+                gpu_memory_utilization=args.gpu_mem_util,
+                max_model_len=args.max_model_len,
+                trust_remote_code=True,
+                limit_mm_per_prompt={"image": 1},
+            )
         except Exception as e:
-            print(f"ERROR during annotation for {video_path}: {e}")
+            print(f"ERROR: Failed to initialize model: {e}")
             sys.exit(1)
 
+        tokenizer = llm.get_tokenizer()
+        sampling_params = SamplingParams(max_tokens=64, temperature=0.0, repetition_penalty=1.05)
+
+        temp_files = save_frames_temp(frames)
+        if not temp_files:
+            print("ERROR: Could not save frames for inference")
+            sys.exit(1)
+
+        try:
+            for frame_index, frame_path in enumerate(temp_files, start=1):
+                print(f"[Frame {frame_index}/{len(temp_files)}] {frame_path}")
+                messages = [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "image", "image": frame_path},
+                            {"type": "text", "text": user_prompt},
+                        ],
+                    }
+                ]
+
+                text = tokenizer.apply_chat_template(
+                    messages, tokenize=False, add_generation_prompt=True
+                )
+                image_inputs, video_inputs, video_kwargs = process_vision_info(messages)
+                outputs = llm.generate(
+                    [{"prompt": text, "multi_modal_data": {"image": image_inputs}}],
+                    sampling_params=sampling_params,
+                )
+
+                result_text = ""
+                if outputs and outputs[0].outputs:
+                    result_text = outputs[0].outputs[0].text.strip()
+
+                print(result_text if result_text else "(no output)")
+
+                lines = [l.strip() for l in result_text.replace(',', '\n').splitlines() if l.strip()]
+                for line in lines:
+                    obj = line.lstrip('- ').lstrip('0123456789. ').strip()
+                    if obj and obj.lower() not in [u.lower() for u in all_objects]:
+                        all_objects.append(obj)
+        finally:
+            for fpath in temp_files:
+                try:
+                    Path(fpath).unlink(missing_ok=True)
+                except Exception:
+                    pass
+
     print("=" * 60)
-    print("Aggregated objects across all camera sources:")
+    print("Aggregated objects across all frames and camera sources:")
     for obj in all_objects:
         print(f" - {obj}")
     print("=" * 60)
