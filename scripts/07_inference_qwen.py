@@ -243,16 +243,19 @@ def find_video_sources(video_path=None, data_name: str = "double_d405"):
         data_name: dataset folder name under `/scratch0/<user>/cleaned_datasets`.
     """
     if video_path:
-        return [Path(video_path)]
+        video_path = Path(video_path)
+        if video_path.is_dir():
+            import glob
+
+            return sorted(Path(p) for p in glob.glob(str(video_path / "**" / "rgb.mp4"), recursive=True))
+        return [video_path]
 
     data_dir = Path(f"/scratch0/xparker/cleaned_datasets/{data_name}/cameras")
-    camera_names = ["ee_zed_m_left", "ee_zed_m_right", "third_person_d405"]
-    videos = []
-
-    for camera_name in camera_names:
-        candidate = data_dir / camera_name / "rgb.mp4"
-        if candidate.exists():
-            videos.append(candidate)
+    videos = sorted(
+        camera_dir / "rgb.mp4"
+        for camera_dir in data_dir.iterdir()
+        if camera_dir.is_dir() and (camera_dir / "rgb.mp4").exists()
+    )
 
     if videos:
         return videos
