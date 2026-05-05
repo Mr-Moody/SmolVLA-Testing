@@ -32,6 +32,7 @@ export PIP_CACHE_DIR="/scratch0/xparker/.cache/pip"
 export HF_HOME="/scratch0/xparker/.cache/huggingface"
 export TORCH_HOME="/scratch0/xparker/.cache/torch"
 export UV_CACHE_DIR="/scratch0/xparker/.cache/uv"
+export VLLM_MEMORY_PROFILER_ESTIMATE_CUDAGRAPHS=1
 
 echo "=========================================="
 echo "Qwen3-VL Server Test"
@@ -104,23 +105,28 @@ fi
 echo ""
 echo "Loading Qwen3-VL model (this may take 1-2 minutes)..."
 python3 << 'EOF'
+import os
 import sys
 from vllm import LLM
 
 try:
     # Load model - this is the actual test
-    print("  Loading: Qwen/Qwen3-VL-30B-A3B-Instruct")
+    print("  Loading: Qwen/Qwen3-VL-4B-Instruct")
+    # Allow overrides via env vars; choose conservative defaults to fit smaller GPUs
+    gpu_mem_util = float(os.environ.get("VLLM_GPU_MEM_UTIL", "0.9"))
+    max_model_len = int(os.environ.get("VLLM_MAX_MODEL_LEN", "2048"))
+    print(f"  Using gpu_memory_utilization={gpu_mem_util}, max_model_len={max_model_len}")
     llm = LLM(
-        model="Qwen/Qwen3-VL-30B-A3B-Instruct",
+        model="Qwen/Qwen3-VL-4B-Instruct",
         tensor_parallel_size=1,
-        gpu_memory_utilization=0.7,
+        gpu_memory_utilization=gpu_mem_util,
+        max_model_len=max_model_len,
         trust_remote_code=True,
     )
     print("  ✓ Model loaded successfully!")
     
     # Show model info
     print(f"  Model type: {type(llm)}")
-    print(f"  GPU memory allocated: ~24GB")
     
 except Exception as e:
     print(f"  ✗ Failed to load model: {e}")
