@@ -149,24 +149,51 @@ def main():
     print("Object Identification:")
     print("="*60 + "\n")
 
-    # Ask model to identify objects in each frame
-    for frame_idx, frame_path in enumerate(frame_paths, 1):
-        print(f"[Frame {frame_idx}/{len(frame_paths)}] {frame_path}")
-        
+    # Ask model to identify objects across all frames in chunks to avoid overload.
+    # We'll send multiple frames per request and aggregate unique object names.
+    chunk_size = 50
+    chunks = [frame_paths[i:i+chunk_size] for i in range(0, len(frame_paths), chunk_size)]
+    all_objects = []
+
+    for ci, chunk in enumerate(chunks, 1):
+        print(f"Processing chunk {ci}/{len(chunks)} with {len(chunk)} frames")
         try:
-            # Create prompt asking to identify the object
-            prompt = f"<image>What object or objects are shown in this image? Identify them clearly."
-            
+            # Build a multimodal prompt listing each frame path as an image token.
+            # Qwen model (via trust_remote_code) should resolve the image files.
+            prompt_parts = []
+            for idx, fp in enumerate(chunk, 1):
+                prompt_parts.append(f"<image>{fp}")
+            prompt_parts.append("\nPlease list all distinct objects visible across these images, one per line. Reply with short object names only.")
+            prompt = "\n".join(prompt_parts)
+
             outputs = llm.generate([prompt], sampling_params=None)
-            
             if outputs and outputs[0].outputs:
-                description = outputs[0].outputs[0].text
-                print(f"  Identified: {description}\n")
+                text = outputs[0].outputs[0].text.strip()
+                print(f"Chunk {ci} model output:\n{text}\n")
+                # Split lines/commas to extract object tokens
+                lines = [l.strip() for l in text.replace(',', '\n').splitlines() if l.strip()]
+                for line in lines:
+                    # Remove numbering like '1.' or '-'
+                    obj = line.lstrip('- ').lstrip('0123456789. ').strip()
+                    if obj:
+                        all_objects.append(obj)
             else:
-                print("  No output from model\n")
-                
+                print(f"Chunk {ci}: No output from model\n")
         except Exception as e:
-            print(f"  Error: {e}\n")
+            print(f"Chunk {ci} Error: {e}\n")
+
+    # Deduplicate and display final object list
+    unique_objs = []
+    for o in all_objects:
+        key = o.lower()
+        if key not in [u.lower() for u in unique_objs]:
+            unique_objs.append(o)
+
+    print("="*60)
+    print("Aggregated objects seen across all frames:")
+    for obj in unique_objs:
+        print(f" - {obj}")
+    print("="*60 + "\n")
 
     # Cleanup temp files
     import os as os_module
