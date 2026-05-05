@@ -8,7 +8,7 @@
 #   ./scripts/07_run_object_detection.sh
 #
 # Optional overrides:
-#   ./scripts/07_run_object_detection.sh --frames 0 --gpu-mem 0.95 --max-len 512
+#   ./scripts/07_run_object_detection.sh --frames 0 --gpu-mem 0.95 --max-len 4096
 #
 # Expected output:
 #   [Frame 1/10] /path/to/frame
@@ -38,7 +38,7 @@ export UV_CACHE_DIR="/scratch0/xparker/.cache/uv"
 # Parse command line args
 FRAMES="${1:-0}"
 GPU_MEM="${2:-0.98}"
-MAX_LEN="${3:-1024}"
+MAX_LEN="${3:-4096}"
 
 # Handle named args
 while [[ $# -gt 0 ]]; do
