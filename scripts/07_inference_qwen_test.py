@@ -200,7 +200,7 @@ def main():
                 text = tokenizer.apply_chat_template(
                     messages, tokenize=False, add_generation_prompt=True
                 )
-                image_inputs, video_inputs, video_kwargs = process_vision_info(messages)
+                image_inputs, video_inputs = process_vision_info(messages)
                 outputs = llm.generate(
                     [{"prompt": text, "multi_modal_data": {"image": image_inputs}}],
                     sampling_params=sampling_params,
