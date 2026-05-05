@@ -121,11 +121,11 @@ def extract_frame_at_index(video_path, frame_index):
         cap.release()
 
 
-def find_video_sources(video_path=None):
+def find_video_sources(video_path=None, data_name: str = "double_d405"):
     if video_path:
         return [Path(video_path)]
 
-    data_dir = Path("/scratch0/xparker/cleaned_datasets/qwen_data/cameras")
+    data_dir = Path(f"/scratch0/xparker/cleaned_datasets/{data_name}/cameras")
     camera_names = ["ee_zed_m_left", "ee_zed_m_right", "third_person_d405"]
     videos = []
 
@@ -147,6 +147,9 @@ def main():
     parser.add_argument("--video-path", 
                         default=None,
                         help="Path to video file (auto-detect if not provided)")
+    parser.add_argument("--data-name",
+                        default="double_d405",
+                        help="Dataset folder name under /scratch0/<user>/cleaned_datasets (default: double_d405)")
     parser.add_argument("--frames-to-extract", type=int, default=0,
                         help="Number of frames to extract from video; 0 means all frames")
     parser.add_argument("--gpu-mem-util", type=float, default=0.98,
@@ -155,9 +158,10 @@ def main():
                         help="Max model sequence length")
     args = parser.parse_args()
 
-    video_paths = find_video_sources(args.video_path)
+    # If a specific video path wasn't provided, discover camera feeds under the chosen dataset
+    video_paths = find_video_sources(args.video_path, args.data_name)
     if not video_paths:
-        print("ERROR: No video sources found under /scratch0/xparker/cleaned_datasets/qwen_data/cameras")
+        print(f"ERROR: No video sources found under /scratch0/xparker/cleaned_datasets/{args.data_name}/cameras")
         sys.exit(1)
 
     print("Auto-detected video sources:")
