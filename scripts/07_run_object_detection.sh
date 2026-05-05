@@ -8,7 +8,7 @@
 #   ./scripts/07_run_object_detection.sh
 #
 # Optional overrides:
-#   ./scripts/07_run_object_detection.sh --frames 15 --gpu-mem 0.95 --max-len 512
+#   ./scripts/07_run_object_detection.sh --frames 0 --gpu-mem 0.95 --max-len 512
 #
 # Expected output:
 #   [Frame 1/10] /path/to/frame
@@ -36,7 +36,7 @@ export TORCH_HOME="/scratch0/xparker/.cache/torch"
 export UV_CACHE_DIR="/scratch0/xparker/.cache/uv"
 
 # Parse command line args
-FRAMES="${1:-10}"
+FRAMES="${1:-0}"
 GPU_MEM="${2:-0.98}"
 MAX_LEN="${3:-1024}"
 
@@ -64,7 +64,11 @@ done
 echo "=========================================="
 echo "Qwen3-VL Object Detection Test"
 echo "=========================================="
-echo "Frames to extract: $FRAMES"
+if [ "$FRAMES" -le 0 ]; then
+    echo "Frames to extract: all frames"
+else
+    echo "Frames to extract: $FRAMES"
+fi
 echo "GPU memory utilization: $GPU_MEM"
 echo "Max model length: $MAX_LEN"
 echo ""
