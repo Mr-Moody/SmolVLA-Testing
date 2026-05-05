@@ -151,7 +151,7 @@ def main():
                         help="Number of frames to extract from video; 0 means all frames")
     parser.add_argument("--gpu-mem-util", type=float, default=0.98,
                         help="GPU memory utilization (0.0-1.0)")
-    parser.add_argument("--max-model-len", type=int, default=1024,
+    parser.add_argument("--max-model-len", type=int, default=4096,
                         help="Max model sequence length")
     args = parser.parse_args()
 
@@ -216,8 +216,9 @@ def main():
                 continue
             frames_at_timestamp.append(frame)
 
-        if len(frames_at_timestamp) != len(video_paths):
-            print(f"[Frame {frame_index + 1}/{frame_count}] Skipping incomplete camera trio")
+        expected_feeds = len(video_paths)
+        if len(frames_at_timestamp) != expected_feeds:
+            print(f"[Frame {frame_index + 1}/{frame_count}] Skipping incomplete camera set (found {len(frames_at_timestamp)}/{expected_feeds})")
             continue
 
         temp_files = save_frames_temp(frames_at_timestamp)
@@ -233,17 +234,11 @@ def main():
         print(f"[Frame {frame_index + 1}/{frame_count}] " + " | ".join(temp_files))
 
         try:
-            messages = [
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "image", "image": temp_files[0]},
-                        {"type": "image", "image": temp_files[1]},
-                        {"type": "image", "image": temp_files[2]},
-                        {"type": "text", "text": user_prompt},
-                    ],
-                }
-            ]
+            # Build a multimodal message containing all available images at this timestamp
+            image_contents = [{"type": "image", "image": p} for p in temp_files]
+            image_contents.append({"type": "text", "text": user_prompt})
+
+            messages = [{"role": "user", "content": image_contents}]
 
             text = tokenizer.apply_chat_template(
                 messages, tokenize=False, add_generation_prompt=True
