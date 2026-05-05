@@ -16,6 +16,15 @@ import sys
 import argparse
 from pathlib import Path
 
+SCRIPT_DIR = Path(__file__).resolve().parent
+PROJECT_ROOT = SCRIPT_DIR.parent
+SRC_DIR = PROJECT_ROOT / "src"
+
+for path in (PROJECT_ROOT, SRC_DIR):
+    path_str = str(path)
+    if path_str not in sys.path:
+        sys.path.insert(0, path_str)
+
 def extract_frames(video_path, num_frames=10):
     """Extract evenly-spaced frames from a video file."""
     try:
@@ -69,6 +78,28 @@ def save_frames_temp(frames, temp_dir="/tmp"):
     
     return temp_files
 
+
+def find_video_sources(video_path=None):
+    if video_path:
+        return [Path(video_path)]
+
+    data_dir = Path("/scratch0/xparker/cleaned_datasets/qwen_data/cameras")
+    camera_names = ["ee_zed_m_left", "ee_zed_m_right", "third_person_d405"]
+    videos = []
+
+    for camera_name in camera_names:
+        candidate = data_dir / camera_name / "rgb.mp4"
+        if candidate.exists():
+            videos.append(candidate)
+
+    if videos:
+        return videos
+
+    import glob
+
+    fallback = sorted(Path(p) for p in glob.glob(str(data_dir / "**" / "rgb.mp4"), recursive=True))
+    return fallback
+
 def main():
     parser = argparse.ArgumentParser(description="Identify objects from video using Qwen3-VL")
     parser.add_argument("--video-path", 
@@ -82,46 +113,18 @@ def main():
                         help="Max model sequence length")
     args = parser.parse_args()
 
-    # Find video if not provided
-    video_path = args.video_path
-    if not video_path:
-        import glob
-        data_dir = Path("/scratch0/xparker/cleaned_datasets/qwen_data")
-        video_patterns = ["*.mp4", "*.avi", "*.mov", "*.mkv"]
-        videos = []
-        for pattern in video_patterns:
-            videos.extend(glob.glob(str(data_dir / "**" / pattern), recursive=True))
-        
-        if not videos:
-            print(f"ERROR: No video found in {data_dir}")
-            sys.exit(1)
-        
-        video_path = sorted(videos)[0]
-        print(f"Auto-detected video: {video_path}\n")
-
-    video_path = Path(video_path)
-    if not video_path.exists():
-        print(f"ERROR: Video not found: {video_path}")
+    video_paths = find_video_sources(args.video_path)
+    if not video_paths:
+        print("ERROR: No video sources found under /scratch0/xparker/cleaned_datasets/qwen_data/cameras")
         sys.exit(1)
 
-    print(f"Video: {video_path}")
-    print(f"Extracting {args.frames_to_extract} frames...\n")
-    
-    frames = extract_frames(str(video_path), num_frames=args.frames_to_extract)
-    
-    if not frames:
-        print("Could not extract frames")
-        sys.exit(1)
-    
-    print(f"✓ Extracted {len(frames)} frames\n")
-    
-    # Load QwenAnnotator which handles video processing and multi-modal input
+    print("Auto-detected video sources:")
+    for video_path in video_paths:
+        print(f" - {video_path}")
+    print("")
+
     print("Loading Qwen annotator and running video-level object identification...")
-    try:
-        from src.annotation.serve_qwen import QwenAnnotator
-    except Exception:
-        # Fallback import if running from package layout
-        from annotation.serve_qwen import QwenAnnotator
+    from annotation.serve_qwen import QwenAnnotator
 
     try:
         annotator = QwenAnnotator(
@@ -134,44 +137,45 @@ def main():
         print(f"ERROR: Failed to initialize annotator: {e}")
         sys.exit(1)
 
-    # Prompt asking for distinct object names across the whole video
     user_prompt = (
-        "List every distinct object visible in the video. "
+        "List every distinct object visible in this camera view. "
         "Reply with one short object name per line, no extra commentary."
     )
 
-    try:
-        result_text = annotator.annotate_episode(str(video_path), user_prompt, max_tokens=512)
-        print("Model output:\n")
-        print(result_text)
+    all_objects = []
 
-        # Parse lines into deduplicated object list
-        lines = [l.strip() for l in result_text.replace(',', '\n').splitlines() if l.strip()]
-        unique = []
-        for l in lines:
-            obj = l.lstrip('- ').lstrip('0123456789. ').strip()
-            if obj and obj.lower() not in [u.lower() for u in unique]:
-                unique.append(obj)
+    for source_index, video_path in enumerate(video_paths, start=1):
+        print(f"Video {source_index}/{len(video_paths)}: {video_path}")
+        print(f"Extracting {args.frames_to_extract} frames...\n")
 
-        print("\nAggregated objects seen in video:")
-        for o in unique:
-            print(f" - {o}")
+        frames = extract_frames(str(video_path), num_frames=args.frames_to_extract)
+        if not frames:
+            print("Could not extract frames")
+            sys.exit(1)
 
-    except Exception as e:
-        print(f"ERROR during annotation: {e}")
-        sys.exit(1)
+        print(f"✓ Extracted {len(frames)} frames\n")
 
-    # Cleanup temp files
-    import os as os_module
-    for fpath in frame_paths:
         try:
-            os_module.remove(fpath)
-        except:
-            pass
+            result_text = annotator.annotate_episode(str(video_path), user_prompt, max_tokens=512)
+            print("Model output:\n")
+            print(result_text)
 
-    print("="*60)
+            lines = [l.strip() for l in result_text.replace(',', '\n').splitlines() if l.strip()]
+            for line in lines:
+                obj = line.lstrip('- ').lstrip('0123456789. ').strip()
+                if obj and obj.lower() not in [u.lower() for u in all_objects]:
+                    all_objects.append(obj)
+        except Exception as e:
+            print(f"ERROR during annotation for {video_path}: {e}")
+            sys.exit(1)
+
+    print("=" * 60)
+    print("Aggregated objects across all camera sources:")
+    for obj in all_objects:
+        print(f" - {obj}")
+    print("=" * 60)
     print("✓ Object identification complete")
-    print("="*60)
+    print("=" * 60)
 
 if __name__ == "__main__":
     main()
