@@ -115,85 +115,51 @@ def main():
     
     print(f"✓ Extracted {len(frames)} frames\n")
     
-    # Save frames to temp files
-    print("Saving frames to temp files...")
-    frame_paths = save_frames_temp(frames)
-    if not frame_paths:
-        print("ERROR: Could not save frames")
-        sys.exit(1)
-    print(f"✓ Saved {len(frame_paths)} frame files\n")
-
-    # Load model
-    print("Loading Qwen3-VL-4B model...")
+    # Load QwenAnnotator which handles video processing and multi-modal input
+    print("Loading Qwen annotator and running video-level object identification...")
     try:
-        from vllm import LLM
-    except ImportError as e:
-        print(f"ERROR: Missing required packages: {e}")
-        sys.exit(1)
+        from src.annotation.serve_qwen import QwenAnnotator
+    except Exception:
+        # Fallback import if running from package layout
+        from annotation.serve_qwen import QwenAnnotator
 
     try:
-        llm = LLM(
-            model="Qwen/Qwen3-VL-4B-Instruct",
+        annotator = QwenAnnotator(
+            model_id=None,
             tensor_parallel_size=1,
             gpu_memory_utilization=args.gpu_mem_util,
             max_model_len=args.max_model_len,
-            trust_remote_code=True,
         )
-        print("✓ Model loaded successfully\n")
     except Exception as e:
-        print(f"✗ Failed to load model: {e}")
+        print(f"ERROR: Failed to initialize annotator: {e}")
         sys.exit(1)
 
-    # Run inference
-    print("="*60)
-    print("Object Identification:")
-    print("="*60 + "\n")
+    # Prompt asking for distinct object names across the whole video
+    user_prompt = (
+        "List every distinct object visible in the video. "
+        "Reply with one short object name per line, no extra commentary."
+    )
 
-    # Ask model to identify objects across all frames in chunks to avoid overload.
-    # We'll send multiple frames per request and aggregate unique object names.
-    chunk_size = 50
-    chunks = [frame_paths[i:i+chunk_size] for i in range(0, len(frame_paths), chunk_size)]
-    all_objects = []
+    try:
+        result_text = annotator.annotate_episode(str(video_path), user_prompt, max_tokens=512)
+        print("Model output:\n")
+        print(result_text)
 
-    for ci, chunk in enumerate(chunks, 1):
-        print(f"Processing chunk {ci}/{len(chunks)} with {len(chunk)} frames")
-        try:
-            # Build a multimodal prompt listing each frame path as an image token.
-            # Qwen model (via trust_remote_code) should resolve the image files.
-            prompt_parts = []
-            for idx, fp in enumerate(chunk, 1):
-                prompt_parts.append(f"<image>{fp}")
-            prompt_parts.append("\nPlease list all distinct objects visible across these images, one per line. Reply with short object names only.")
-            prompt = "\n".join(prompt_parts)
+        # Parse lines into deduplicated object list
+        lines = [l.strip() for l in result_text.replace(',', '\n').splitlines() if l.strip()]
+        unique = []
+        for l in lines:
+            obj = l.lstrip('- ').lstrip('0123456789. ').strip()
+            if obj and obj.lower() not in [u.lower() for u in unique]:
+                unique.append(obj)
 
-            outputs = llm.generate([prompt], sampling_params=None)
-            if outputs and outputs[0].outputs:
-                text = outputs[0].outputs[0].text.strip()
-                print(f"Chunk {ci} model output:\n{text}\n")
-                # Split lines/commas to extract object tokens
-                lines = [l.strip() for l in text.replace(',', '\n').splitlines() if l.strip()]
-                for line in lines:
-                    # Remove numbering like '1.' or '-'
-                    obj = line.lstrip('- ').lstrip('0123456789. ').strip()
-                    if obj:
-                        all_objects.append(obj)
-            else:
-                print(f"Chunk {ci}: No output from model\n")
-        except Exception as e:
-            print(f"Chunk {ci} Error: {e}\n")
+        print("\nAggregated objects seen in video:")
+        for o in unique:
+            print(f" - {o}")
 
-    # Deduplicate and display final object list
-    unique_objs = []
-    for o in all_objects:
-        key = o.lower()
-        if key not in [u.lower() for u in unique_objs]:
-            unique_objs.append(o)
-
-    print("="*60)
-    print("Aggregated objects seen across all frames:")
-    for obj in unique_objs:
-        print(f" - {obj}")
-    print("="*60 + "\n")
+    except Exception as e:
+        print(f"ERROR during annotation: {e}")
+        sys.exit(1)
 
     # Cleanup temp files
     import os as os_module
