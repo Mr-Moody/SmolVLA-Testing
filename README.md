@@ -41,14 +41,14 @@ Industrial-Project/
         train_phase.py         ← Phase-conditioned training entry point
         tune_fsm.py            ← FSM threshold tuning vs Qwen ground-truth
         writeback_annotations.py ← Merge phase + subtask columns into dataset copy
-      data_cleaner.py          ← (existing — do not modify)
-      data_converter.py        ← (existing — do not modify)
-      dataset_utils.py         ← (existing — do not modify)
-      labeler.py               ← (existing — do not modify)
-      create_labels.py         ← (existing — do not modify)
-      merge_datasets.py        ← (existing — do not modify)
-      train_act.py             ← (existing — do not modify)
-      train_pi0.py             ← (existing — do not modify)
+      data_cleaner.py
+      data_converter.py
+      dataset_utils.py
+      labeler.py
+      create_labels.py
+      merge_datasets.py
+      train_act.py
+      train_pi0.py
     scripts/                   ← Shell scripts only (batch ops, GPU cluster)
       00_run_params.sh … 05_extract_from_scratch.sh
       convert_all.sh  run_training.sh  setup_scratch.sh  …
@@ -185,11 +185,7 @@ cleaned_datasets/<name>/
 | 3 | `constrained_motion` | Lift while grasped, in-hand manipulation | Insertion stroke under contact |
 | 4 | `verify_release` | Place + gripper open + retract | Seating verification, gripper open + retract |
 
-**Never hardcode phase integers.** Always import from `src/common/phases.py`:
-
-```python
-from src.common.phases import Phase, PHASE_NAMES, is_legal_transition
-```
+Phase IDs and transition logic are defined in `src/common/phases.py`, which is the single source of truth for all phase constants.
 
 ### Policy Variants
 
@@ -329,10 +325,10 @@ Checks: robot reachable, F/T sensor near zero, checkpoint valid, FSM valid phase
 
 ```bash
 # All tests (excludes GPU and real-robot tests):
-python -m pytest tests/ -v -m "not gpu"
+uv --project ../lerobot run python -m pytest tests/ -v -m "not gpu"
 
 # With coverage:
-python -m pytest tests/ -m "not gpu" --cov=src --cov-report=term-missing
+uv --project ../lerobot run python -m pytest tests/ -m "not gpu" --cov=src --cov-report=term-missing
 ```
 
 Test markers:
@@ -513,14 +509,3 @@ The `MockFrankaInterface` (used in dry-run and tests) enforces:
 | EEF force > 30 N | Reject |
 | Gripper close cmd in `FREE_MOTION` phase | Reject |
 | Action outside workspace bounds | Reject |
-
----
-
-## Key Design Constraints
-
-- **Never modify** existing files: `main.py`, `src/data_cleaner.py`, `src/data_converter.py`, `src/dataset_utils.py`, `src/labeler.py`, `src/create_labels.py`, `src/merge_datasets.py`, `src/train_act.py`, `src/train_pi0.py`, `src/smolvla_franka_setup.py`, and `scripts/00_run_params.sh` … `scripts/05_extract_from_scratch.sh`.
-- All new Python code goes under `src/<subpackage>/` with matching tests under `tests/`.
-- `scripts/` contains **shell scripts only**.
-- Phase IDs are always imported from `src/common/phases.py` — never hardcoded.
-- Annotated datasets live at `lerobot_datasets/<name>_annotated/` — the source dataset is never overwritten.
-- Gold annotations live in `data/gold/` and are the few-shot source of truth for Qwen prompts.
