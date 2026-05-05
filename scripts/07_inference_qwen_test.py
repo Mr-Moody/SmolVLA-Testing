@@ -73,12 +73,14 @@ def extract_frames(video_path, num_frames=None):
 def save_frames_temp(frames, temp_dir="/tmp"):
     """Save frames to temp files for vLLM to access."""
     import cv2
+    import os
     import tempfile
     
     temp_files = []
     try:
         for i, frame in enumerate(frames):
             fd, fpath = tempfile.mkstemp(suffix=".jpg", dir=temp_dir)
+            os.close(fd)
             cv2.imwrite(fpath, frame)
             temp_files.append(fpath)
     except Exception as e:
