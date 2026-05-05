@@ -235,27 +235,19 @@ def extract_frame_at_index(video_path, frame_index):
         cap.release()
 
 
-def find_video_sources(video_path=None, data_name: str = "double_d405"):
-    """Find video sources (either user-specified or auto-detect).
-
-    Args:
-        video_path: explicit path to a single video file.
-        data_name: dataset folder name under `/scratch0/<user>/cleaned_datasets`.
-    """
+def find_video_sources(video_path=None):
+    """Find video sources (either user-specified or auto-detect)."""
     if video_path:
-        video_path = Path(video_path)
-        if video_path.is_dir():
-            import glob
+        return [Path(video_path)]
 
-            return sorted(Path(p) for p in glob.glob(str(video_path / "**" / "rgb.mp4"), recursive=True))
-        return [video_path]
+    data_dir = Path("/scratch0/xparker/cleaned_datasets/qwen_data/cameras")
+    camera_names = ["ee_zed_m_left", "ee_zed_m_right", "third_person_d405"]
+    videos = []
 
-    data_dir = Path(f"/scratch0/xparker/cleaned_datasets/{data_name}/cameras")
-    videos = sorted(
-        camera_dir / "rgb.mp4"
-        for camera_dir in data_dir.iterdir()
-        if camera_dir.is_dir() and (camera_dir / "rgb.mp4").exists()
-    )
+    for camera_name in camera_names:
+        candidate = data_dir / camera_name / "rgb.mp4"
+        if candidate.exists():
+            videos.append(candidate)
 
     if videos:
         return videos
@@ -395,9 +387,6 @@ def main():
     parser = argparse.ArgumentParser(description="Label video frames with subtasks using Qwen3-VL")
     parser.add_argument("--video-path", default=None,
                         help="Path to video file (auto-detect if not provided)")
-    parser.add_argument("--data-name",
-                        default="double_d405",
-                        help="Dataset folder name under /scratch0/<user>/cleaned_datasets (default: double_d405)")
     parser.add_argument("--output", type=str, default="subtask_labels.json",
                         help="Output JSON file for labels")
     parser.add_argument("--context-window", type=int, default=2,
@@ -413,9 +402,9 @@ def main():
     
     args = parser.parse_args()
 
-    video_paths = find_video_sources(args.video_path, args.data_name)
+    video_paths = find_video_sources(args.video_path)
     if not video_paths:
-        print(f"ERROR: No video sources found under /scratch0/xparker/cleaned_datasets/{args.data_name}/cameras")
+        print("ERROR: No video sources found")
         sys.exit(1)
 
     print(f"Processing synchronized feeds from {len(video_paths)} cameras:")
