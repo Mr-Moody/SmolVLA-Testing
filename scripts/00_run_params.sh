@@ -48,7 +48,7 @@ ALLOW_MISSING_TASK_FALLBACK=true
 
 # -------- SSH topology --------
 REMOTE_USER="${WORKFLOW_USER}"
-GPU_NODE="bluestreak.cs.ucl.ac.uk"
+GPU_NODE="sentinel.cs.ucl.ac.uk"
 JUMP_HOST="knuckles.cs.ucl.ac.uk"
 # SSH key for passwordless access. Generate once with:
 #   ssh-keygen -t ed25519 -f ~/.ssh/ucl_key -N ""
