@@ -18,6 +18,7 @@ echo "  SmolVLA Local Environment Setup"
 echo "================================================================="
 echo "  Project  : ${PROJECT_ROOT}"
 echo "  lerobot  : ${LEROBOT_ROOT}"
+echo "  Venv     : ${VENV_DIR}  (separate from lerobot/.venv)"
 echo "================================================================="
 echo ""
 
@@ -55,9 +56,9 @@ fi
 echo ""
 echo "[2/3] Installing dependencies (this may take a few minutes)..."
 
-uv --project "${LEROBOT_ROOT}" sync --extra smolvla --extra dataset
+UV_PROJECT_ENVIRONMENT="${VENV_DIR}" uv --project "${LEROBOT_ROOT}" sync --extra smolvla --extra dataset
 
-echo "  Dependencies installed into ${LEROBOT_ROOT}/.venv"
+echo "  Dependencies installed into ${VENV_DIR}"
 
 # ---------------------------------------------------------------------------
 # 3. Verify torch + CUDA
@@ -65,7 +66,7 @@ echo "  Dependencies installed into ${LEROBOT_ROOT}/.venv"
 echo ""
 echo "[3/3] Verifying PyTorch installation..."
 
-uv --project "${LEROBOT_ROOT}" run python - <<'PY'
+UV_PROJECT_ENVIRONMENT="${VENV_DIR}" uv --project "${LEROBOT_ROOT}" run python - <<'PY'
 import torch
 print(f"  torch version  : {torch.__version__}")
 print(f"  CUDA available : {torch.cuda.is_available()}")

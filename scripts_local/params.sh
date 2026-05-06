@@ -14,6 +14,10 @@ CLEANED_DATASET_ROOT="${PROJECT_ROOT}/cleaned_datasets"
 LEROBOT_DATASET_ROOT="${PROJECT_ROOT}/lerobot_datasets"
 OUTPUT_ROOT="${PROJECT_ROOT}/outputs"
 
+# Dedicated venv for SmolVLA training — keeps lerobot/.venv untouched so
+# camera/data-collection packages installed there are not affected.
+VENV_DIR="${PROJECT_ROOT}/.venv"
+
 # -------- Run identity --------
 MODEL_TYPE="smolvla"          # smolvla | act
 RUN_NAME="local_run"

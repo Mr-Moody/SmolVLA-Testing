@@ -31,8 +31,9 @@ LOG_FILE="${OUTPUT_ROOT}/${RUN_TAG}.log"
 
 mkdir -p "${OUTPUT_ROOT}"
 
-# Shorthand: run python via the lerobot project (matches CLAUDE.md convention)
-UV="uv --project ${LEROBOT_ROOT} run python"
+# Shorthand: run python via the lerobot project using our dedicated venv.
+# UV_PROJECT_ENVIRONMENT keeps lerobot/.venv untouched (camera packages safe).
+UV="UV_PROJECT_ENVIRONMENT=${VENV_DIR} uv --project ${LEROBOT_ROOT} run python"
 
 # ---------------------------------------------------------------------------
 # Create local data directories if they don't exist yet
