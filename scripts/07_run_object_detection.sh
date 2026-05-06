@@ -8,7 +8,7 @@
 #   ./scripts/07_run_object_detection.sh
 #
 # Optional overrides:
-#   ./scripts/07_run_object_detection.sh --frames 0 --gpu-mem 0.95 --max-len 4096
+#   ./scripts/07_run_object_detection.sh --data-name 201_1 --frames 0 --gpu-mem 0.95 --max-len 4096
 #
 # Expected output:
 #   [Frame 1/10] /path/to/frame
@@ -39,6 +39,7 @@ export UV_CACHE_DIR="/scratch0/xparker/.cache/uv"
 FRAMES="${1:-0}"
 GPU_MEM="${2:-0.98}"
 MAX_LEN="${3:-4096}"
+DATA_NAME="${4:-double_d405}"
 
 # Handle named args
 while [[ $# -gt 0 ]]; do
@@ -53,6 +54,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --max-len)
             MAX_LEN="$2"
+            shift 2
+            ;;
+        --data-name)
+            DATA_NAME="$2"
             shift 2
             ;;
         *)
@@ -71,10 +76,12 @@ else
 fi
 echo "GPU memory utilization: $GPU_MEM"
 echo "Max model length: $MAX_LEN"
+echo "Dataset name: $DATA_NAME"
 echo ""
 
 # Run the inference script
 python3 scripts/07_inference_qwen_test.py \
+    --data-name "$DATA_NAME" \
     --frames-to-extract "$FRAMES" \
     --gpu-mem-util "$GPU_MEM" \
     --max-model-len "$MAX_LEN"
