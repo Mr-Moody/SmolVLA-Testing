@@ -400,9 +400,12 @@ class SmolVLADatasetConverter:
 
     def _action_dimension_names(self) -> list[str]:
         """Build action dimension names for commanded joint targets plus gripper command."""
-        rs = self.robot_rows[0]["robot_state"]
-        names: list[str] = []
-        names += [f"q_cmd_{i}" for i in range(len(rs.get("q_cmd", [])))]
+        first = self.robot_rows[0]
+        if "backfilled_q_cmd" in first:
+            q_len = len(first["backfilled_q_cmd"])
+        else:
+            q_len = len(first["robot_state"].get("q_cmd", []))
+        names = [f"q_cmd_{i}" for i in range(q_len)]
         names += ["gripper_command"]
         return names
 
@@ -456,12 +459,14 @@ class SmolVLADatasetConverter:
             )
 
     def _action_vector(self, row: dict[str, Any], _next_row: dict[str, Any]) -> np.ndarray:
-        q_cmd = [float(v) for v in row["robot_state"].get("q_cmd", [])]
+        if "backfilled_q_cmd" in row:
+            q_cmd = [float(v) for v in row["backfilled_q_cmd"]]
+        else:
+            q_cmd = [float(v) for v in row["robot_state"].get("q_cmd", [])]
         if not q_cmd:
-            raise KeyError("robot_state.q_cmd was missing; cannot build action")
+            raise KeyError("robot_state.q_cmd (or backfilled_q_cmd) was missing; cannot build action")
         gripper = [float(row.get("executed_action", {}).get("gripper_command", 0.0))]
-        action = q_cmd + gripper
-        return np.asarray(action, dtype=np.float32)
+        return np.asarray(q_cmd + gripper, dtype=np.float32)
 
     def _episode_quality(self, steps: list[dict[str, Any]]) -> EpisodeQuality:
         if not steps:

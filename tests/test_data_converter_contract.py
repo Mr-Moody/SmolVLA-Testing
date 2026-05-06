@@ -40,7 +40,7 @@ def data_converter(monkeypatch):
     sys.modules.pop("src.data_converter", None)
 
 
-def _row(q, gripper_width, gripper_command, q_cmd=None):
+def _row(q, gripper_width, gripper_command, q_cmd=None, backfilled_q_cmd=None):
     robot_state = {
         "q": q,
         "dq": [99.0] * len(q),
@@ -50,7 +50,7 @@ def _row(q, gripper_width, gripper_command, q_cmd=None):
     }
     if q_cmd is not None:
         robot_state["q_cmd"] = q_cmd
-    return {
+    row = {
         "robot_state": robot_state,
         "executed_action": {
             "cartesian_delta_translation": [10.0, 20.0, 30.0],
@@ -58,6 +58,9 @@ def _row(q, gripper_width, gripper_command, q_cmd=None):
             "gripper_command": gripper_command,
         },
     }
+    if backfilled_q_cmd is not None:
+        row["backfilled_q_cmd"] = backfilled_q_cmd
+    return row
 
 
 def test_converter_uses_q_and_gripper_width_for_state(data_converter):
@@ -88,6 +91,28 @@ def test_converter_uses_q_cmd_and_gripper_command_for_action(data_converter):
     action = converter._action_vector(current, next_row)
 
     np.testing.assert_allclose(action, np.array([20, 21, 22, 23, 24, 25, 26, 1.0], dtype=np.float32))
+    assert converter._action_dimension_names() == [
+        "q_cmd_0",
+        "q_cmd_1",
+        "q_cmd_2",
+        "q_cmd_3",
+        "q_cmd_4",
+        "q_cmd_5",
+        "q_cmd_6",
+        "gripper_command",
+    ]
+
+
+def test_converter_falls_back_to_backfilled_q_cmd_for_action(data_converter):
+    """Datasets 100-103 store commanded joints as top-level backfilled_q_cmd."""
+    converter = object.__new__(data_converter.SmolVLADatasetConverter)
+    current = _row([0, 1, 2, 3, 4, 5, 6], 0.076, 1.0, backfilled_q_cmd=[30, 31, 32, 33, 34, 35, 36])
+    next_row = _row([10, 11, 12, 13, 14, 15, 16], 0.074, 0.0)
+    converter.robot_rows = [current, next_row]
+
+    action = converter._action_vector(current, next_row)
+
+    np.testing.assert_allclose(action, np.array([30, 31, 32, 33, 34, 35, 36, 1.0], dtype=np.float32))
     assert converter._action_dimension_names() == [
         "q_cmd_0",
         "q_cmd_1",
