@@ -25,6 +25,10 @@ let trimState = {
   dragging: null,
   dirty: false,
 };
+let timelineSeekState = {
+  dragging: false,
+  element: null,
+};
 let subtaskState = {
   boundaries: [],       // 4 absolute video-time values dividing 5 phases
   draggingBoundary: null,
@@ -263,10 +267,93 @@ function primaryEnd() {
   return cams.length ? cams[0].end_s : 0;
 }
 
-function relativeTime() {
+function primaryFrameDuration() {
+  const ep = currentEpisode();
+  if (!ep) return 1 / 30;
+  const primaryCam = primaryCameraName();
+  const fps = primaryCam ? Number(ep.cameras[primaryCam]?.fps) : 0;
+  return fps > 0 ? 1 / fps : 1 / 30;
+}
+
+function currentEpisodeOffset() {
   const v0 = videos[0];
   if (!v0) return 0;
-  return Math.max(0, v0.currentTime - primaryStart());
+  return clampEpisodeOffset(v0.currentTime - primaryStart());
+}
+
+function relativeTime() {
+  return currentEpisodeOffset();
+}
+
+function episodePctForTime(value) {
+  const dur = epDuration();
+  if (dur <= 0) return 0;
+  return ((value - primaryStart()) / dur) * 100;
+}
+
+function clampEpisodeOffset(offset) {
+  return Math.max(0, Math.min(offset, epDuration()));
+}
+
+function videoTimeForOffset(cam, offset) {
+  const ep = currentEpisode();
+  if (!ep || !ep.cameras[cam]) return 0;
+  const info = ep.cameras[cam];
+  const camDur = Math.max(0, info.end_s - info.start_s);
+  return info.start_s + Math.max(0, Math.min(offset, camDur));
+}
+
+function setAllVideosToOffset(offset) {
+  const ep = currentEpisode();
+  if (!ep) return;
+  const camNames = Object.keys(ep.cameras);
+  const sharedOffset = clampEpisodeOffset(offset);
+  camNames.forEach((cam, i) => {
+    const v = videos[i];
+    if (!v) return;
+    v.currentTime = videoTimeForOffset(cam, sharedOffset);
+  });
+  updateSeekbar();
+}
+
+function offsetFromTimelinePointer(element, clientX) {
+  if (!element) return currentEpisodeOffset();
+  const rect = element.getBoundingClientRect();
+  const frac = rect.width > 0 ? Math.max(0, Math.min(1, (clientX - rect.left) / rect.width)) : 0;
+  return frac * epDuration();
+}
+
+function beginTimelineSeek(element, event) {
+  if (!episodes.length || !element) return;
+  timelineSeekState.dragging = true;
+  timelineSeekState.element = element;
+  event.preventDefault();
+  document.body.classList.add('timeline-seeking');
+  setAllVideosToOffset(offsetFromTimelinePointer(element, event.clientX));
+}
+
+function endTimelineSeek() {
+  if (!timelineSeekState.dragging) return;
+  timelineSeekState.dragging = false;
+  timelineSeekState.element = null;
+  document.body.classList.remove('timeline-seeking');
+  updateSeekbar();
+}
+
+function syncPeerVideosToPrimary(force = false) {
+  const ep = currentEpisode();
+  const v0 = videos[0];
+  if (!ep || !v0) return;
+  const sharedOffset = currentEpisodeOffset();
+  Object.keys(ep.cameras).forEach((cam, i) => {
+    if (i === 0) return;
+    const v = videos[i];
+    if (!v) return;
+    const target = videoTimeForOffset(cam, sharedOffset);
+    if (force || Math.abs(v.currentTime - target) > 0.08) {
+      v.currentTime = target;
+    }
+  });
 }
 
 function clampTrimValue(value) {
@@ -339,6 +426,7 @@ function setTrimBoundary(handle, nextValue) {
   trimState.end_s = clampTrimValue(trimState.end_s);
   updateTrimDirtyState();
   updateTrimUi();
+  setAllVideosToOffset((handle === 'start' ? trimState.start_s : trimState.end_s) - primaryStart());
 }
 
 function trimValueFromPointer(clientX) {
@@ -423,7 +511,7 @@ function subtaskBoundaryFromPointer(clientX) {
   if (!timeline) return currentTrimStart();
   const rect = timeline.getBoundingClientRect();
   const frac = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
-  return currentTrimStart() + frac * (currentTrimEnd() - currentTrimStart());
+  return primaryStart() + frac * epDuration();
 }
 
 function updateSubtaskBoundary(idx, value) {
@@ -436,6 +524,7 @@ function updateSubtaskBoundary(idx, value) {
   subtaskState.boundaries[idx] = Math.max(minVal, Math.min(value, maxVal));
   subtaskState.dirty = true;
   updateSubtaskUi();
+  setAllVideosToOffset(subtaskState.boundaries[idx] - primaryStart());
 }
 
 function beginSubtaskDrag(idx, event) {
@@ -463,8 +552,8 @@ function updateSubtaskUi() {
 
   const trimStart = currentTrimStart();
   const trimEnd = currentTrimEnd();
-  const trimDur = trimEnd - trimStart;
-  if (trimDur <= 0) return;
+  const dur = epDuration();
+  if (dur <= 0 || trimEnd <= trimStart) return;
 
   const allBounds = [trimStart, ...subtaskState.boundaries, trimEnd];
   const start = primaryStart();
@@ -472,8 +561,8 @@ function updateSubtaskUi() {
   SUBTASK_PHASES.forEach((_, i) => {
     const seg = document.getElementById(`subtask-seg-${i}`);
     if (!seg) return;
-    const leftPct = ((allBounds[i] - trimStart) / trimDur) * 100;
-    const rightPct = ((allBounds[i + 1] - trimStart) / trimDur) * 100;
+    const leftPct = episodePctForTime(allBounds[i]);
+    const rightPct = episodePctForTime(allBounds[i + 1]);
     seg.style.left = `${leftPct}%`;
     seg.style.width = `${Math.max(0, rightPct - leftPct)}%`;
   });
@@ -481,12 +570,12 @@ function updateSubtaskUi() {
   for (let i = 0; i < SUBTASK_PHASES.length - 1; i++) {
     const handle = document.getElementById(`subtask-boundary-${i}`);
     if (handle) {
-      const pct = ((subtaskState.boundaries[i] - trimStart) / trimDur) * 100;
+      const pct = episodePctForTime(subtaskState.boundaries[i]);
       handle.style.left = `${pct}%`;
     }
     const timeLabel = document.getElementById(`subtask-time-${i}`);
     if (timeLabel) {
-      const pct = ((subtaskState.boundaries[i] - trimStart) / trimDur) * 100;
+      const pct = episodePctForTime(subtaskState.boundaries[i]);
       timeLabel.style.left = `${pct}%`;
       timeLabel.textContent = fmt(subtaskState.boundaries[i] - start);
     }
@@ -494,7 +583,7 @@ function updateSubtaskUi() {
 
   const playhead = document.getElementById('subtask-playhead');
   if (playhead && videos[0]) {
-    const pct = ((videos[0].currentTime - trimStart) / trimDur) * 100;
+    const pct = episodePctForTime(videos[0].currentTime);
     playhead.style.left = `${Math.max(0, Math.min(100, pct))}%`;
   }
 
@@ -567,11 +656,10 @@ function loadEpisode(idx) {
   videos.forEach((v, i) => {
     const cam = camNames[i];
     if (!cam) return;
-    const info = ep.cameras[cam];
     const primaryCam = camNames[0];
     const trimOffset = (ep.trim_start_s ?? ep.cameras[primaryCam].start_s) - ep.cameras[primaryCam].start_s;
     const seekTo = () => {
-      v.currentTime = Math.max(info.start_s, Math.min(info.start_s + trimOffset, info.end_s));
+      v.currentTime = videoTimeForOffset(cam, trimOffset);
     };
     if (v.readyState >= 1) {
       seekTo();
@@ -618,15 +706,9 @@ function playAll() {
     const trimStart = currentTrimStart();
     const trimEnd = currentTrimEnd();
     if (primaryCam && videos[0] && (videos[0].currentTime < trimStart || videos[0].currentTime >= trimEnd - 0.1)) {
-      videos.forEach((v, i) => {
-        const cam = camNames[i];
-        if (!cam) return;
-        const offset = trimStart - ep.cameras[primaryCam].start_s;
-        v.currentTime = Math.max(
-          ep.cameras[cam].start_s,
-          Math.min(ep.cameras[cam].start_s + offset, ep.cameras[cam].end_s),
-        );
-      });
+      setAllVideosToOffset(trimStart - ep.cameras[primaryCam].start_s);
+    } else {
+      syncPeerVideosToPrimary(true);
     }
   }
   videos.forEach(v => { if (v.src) v.play().catch(() => {}); });
@@ -653,12 +735,7 @@ function jumpToStart() {
   const primaryCam = camNames[0];
   if (!primaryCam) return;
   const trimStart = currentTrimStart();
-  const offset = trimStart - ep.cameras[primaryCam].start_s;
-  videos.forEach((v, i) => {
-    const cam = camNames[i];
-    if (!cam) return;
-    v.currentTime = Math.max(ep.cameras[cam].start_s, ep.cameras[cam].start_s + offset);
-  });
+  setAllVideosToOffset(trimStart - ep.cameras[primaryCam].start_s);
 }
 
 function jumpToEnd() {
@@ -668,40 +745,23 @@ function jumpToEnd() {
   const primaryCam = camNames[0];
   if (!primaryCam) return;
   const trimEnd = currentTrimEnd();
-  const offset = trimEnd - ep.cameras[primaryCam].start_s;
-  videos.forEach((v, i) => {
-    const cam = camNames[i];
-    if (!cam) return;
-    v.currentTime = Math.min(ep.cameras[cam].start_s + offset, ep.cameras[cam].end_s);
-  });
+  setAllVideosToOffset(trimEnd - ep.cameras[primaryCam].start_s);
 }
 
 function skipSeconds(delta) {
   if (!episodes.length) return;
-  const ep = episodes[currentEpIdx];
-  const camNames = Object.keys(ep.cameras);
-  const primaryCam = camNames[0];
-  if (!primaryCam) return;
-  const info = ep.cameras[primaryCam];
-  const newTime = Math.max(info.start_s, Math.min(videos[0].currentTime + delta, info.end_s));
-  const offset = newTime - videos[0].currentTime;
-  videos.forEach((v, i) => {
-    const cam = camNames[i];
-    if (!cam) return;
-    v.currentTime = Math.max(ep.cameras[cam].start_s, Math.min(v.currentTime + offset, ep.cameras[cam].end_s));
-  });
+  setAllVideosToOffset(currentEpisodeOffset() + delta);
+}
+
+function stepFrames(direction) {
+  if (!episodes.length) return;
+  if (isPlaying) pauseAll();
+  setAllVideosToOffset(currentEpisodeOffset() + direction * primaryFrameDuration());
 }
 
 function seekToFraction(frac) {
   if (!episodes.length) return;
-  const ep = episodes[currentEpIdx];
-  const camNames = Object.keys(ep.cameras);
-  camNames.forEach((cam, i) => {
-    const v = videos[i];
-    if (!v) return;
-    const info = ep.cameras[cam];
-    v.currentTime = info.start_s + frac * (info.end_s - info.start_s);
-  });
+  setAllVideosToOffset(frac * epDuration());
 }
 
 // ── Seekbar sync ──────────────────────────────────────────────────────────
@@ -717,6 +777,7 @@ function updateSeekbar() {
 }
 
 function seekbarRafLoop() {
+  if (isPlaying) syncPeerVideosToPrimary();
   updateSeekbar();
   seekRafId = requestAnimationFrame(seekbarRafLoop);
 }
@@ -910,29 +971,26 @@ document.addEventListener('keydown', e => {
   if (e.code === 'ArrowLeft' || e.code === 'ArrowRight') {
     e.preventDefault();
     if (e.ctrlKey || e.metaKey) {
-      const sel = document.getElementById('dataset-select');
-      const dir = e.code === 'ArrowLeft' ? -1 : 1;
-      const next = sel.selectedIndex + dir;
-      if (next >= 0 && next < sel.options.length) {
-        sel.selectedIndex = next;
-        selectDataset(sel.value);
-      }
-    } else {
       if (e.code === 'ArrowLeft') loadEpisode(currentEpIdx - 1);
       else loadEpisode(currentEpIdx + 1);
+    } else {
+      stepFrames(e.code === 'ArrowLeft' ? -1 : 1);
     }
   }
 });
 
 const seekbar = document.getElementById('seekbar');
 seekbar.addEventListener('mousedown', () => { seekSuppressed = true; });
+seekbar.addEventListener('touchstart', () => { seekSuppressed = true; });
 seekbar.addEventListener('input', () => {
   seekToFraction(seekbar.value / 1000);
   const dur = epDuration();
   document.getElementById('time-display').textContent = `${fmt((seekbar.value / 1000) * dur)} / ${fmt(dur)}`;
+  updateTrimUi();
+  updateSubtaskUi();
 });
-seekbar.addEventListener('mouseup', () => { seekSuppressed = false; });
-seekbar.addEventListener('touchend', () => { seekSuppressed = false; });
+seekbar.addEventListener('mouseup', () => { seekSuppressed = false; updateSeekbar(); });
+seekbar.addEventListener('touchend', () => { seekSuppressed = false; updateSeekbar(); });
 
 const trimTimeline = document.getElementById('trim-timeline');
 const trimHandleStart = document.getElementById('trim-handle-start');
@@ -960,13 +1018,20 @@ trimHandleEnd.addEventListener('mousedown', event => beginTrimDrag('end', event)
 trimTimeline.addEventListener('mousedown', event => {
   if (!episodes.length) return;
   if (event.target === trimHandleStart || event.target === trimHandleEnd) return;
-  const targetValue = trimValueFromPointer(event.clientX);
-  const startDist = Math.abs(targetValue - trimState.start_s);
-  const endDist = Math.abs(targetValue - trimState.end_s);
-  beginTrimDrag(startDist <= endDist ? 'start' : 'end', event);
+  beginTimelineSeek(trimTimeline, event);
+});
+
+const subtaskTimeline = document.getElementById('subtask-timeline');
+subtaskTimeline.addEventListener('mousedown', event => {
+  if (!episodes.length) return;
+  if (event.target.closest('.subtask-boundary')) return;
+  beginTimelineSeek(subtaskTimeline, event);
 });
 
 document.addEventListener('mousemove', event => {
+  if (timelineSeekState.dragging) {
+    setAllVideosToOffset(offsetFromTimelinePointer(timelineSeekState.element, event.clientX));
+  }
   if (trimState.dragging) {
     setTrimBoundary(trimState.dragging, trimValueFromPointer(event.clientX));
   }
@@ -976,6 +1041,7 @@ document.addEventListener('mousemove', event => {
 });
 
 document.addEventListener('mouseup', () => {
+  endTimelineSeek();
   endTrimDrag();
   endSubtaskDrag();
 });
