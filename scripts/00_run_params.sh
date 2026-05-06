@@ -15,7 +15,7 @@ REMOTE_PROJECT_DIRNAME="smolvla_project"
 # -------- Core run controls --------
 MODEL_TYPE="act"  # smolvla | act
 RUN_NAME="test_qwen"
-DATASET_NAMES=("double_d405")
+DATASET_NAMES=(201_1)
 DATASET_ROOT="/scratch0/${WORKFLOW_USER}/lerobot_datasets"
 SAVE_FREQ=1000
 
