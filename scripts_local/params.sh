@@ -10,6 +10,7 @@ PROJECT_ROOT="$(cd "${PARAMS_DIR}/.." && pwd)"
 
 # -------- Project layout --------
 LEROBOT_ROOT="${PROJECT_ROOT}/../lerobot"
+RAW_DATASET_ROOT="${PROJECT_ROOT}/raw_datasets"
 CLEANED_DATASET_ROOT="${PROJECT_ROOT}/cleaned_datasets"
 LEROBOT_DATASET_ROOT="${PROJECT_ROOT}/lerobot_datasets"
 OUTPUT_ROOT="${PROJECT_ROOT}/outputs"
@@ -19,13 +20,19 @@ OUTPUT_ROOT="${PROJECT_ROOT}/outputs"
 VENV_DIR="${PROJECT_ROOT}/.venv"
 
 # -------- Run identity --------
-MODEL_TYPE="smolvla"          # smolvla | act
+MODEL_TYPE="act"              # smolvla | act
 RUN_NAME="local_run"
-DATASET_NAMES=(qwen_data)
+DATASET_NAMES=(100 101 102 103)
 
 # -------- Preprocessing --------
 PRIMARY_CAMERA="ee_zed_m_left"
 VCODEC="h264"                 # h264 (software) | h264_nvenc (NVIDIA encoder)
+# Set to true to skip the clean step (raw → cleaned) if already done.
+# NOTE: always set this to true if you have manually labelled annotations in
+# cleaned_datasets/ — the clean step wipes the output dir, so labels would be
+# lost unless they are also present in raw_datasets/ (see 02_run.sh which backs
+# them up automatically, but SKIP_CLEAN=true is safest when labels already exist).
+SKIP_CLEAN=true
 
 # -------- Training hyperparameters --------
 STEPS=20000
