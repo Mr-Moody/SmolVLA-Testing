@@ -680,7 +680,7 @@ def serve_video(dataset: str, camera: str):
         return Response("not found", status=404)
 
     # Let Werkzeug handle RFC-compliant Range and conditional requests.
-    return send_file(video_path, mimetype="video/mp4", conditional=True)
+    return send_file(video_path.resolve(), mimetype="video/mp4", conditional=True)
 
 
 # ---------------------------------------------------------------------------
