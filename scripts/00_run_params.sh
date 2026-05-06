@@ -13,19 +13,25 @@ WORKFLOW_USER="eredhead"
 REMOTE_PROJECT_DIRNAME="smolvla_project"
 
 # -------- Core run controls --------
-MODEL_TYPE="act"  # smolvla | act
-RUN_NAME="test_100_101_102_103"
-DATASET_NAMES=(100 101 102 103)
+# Run SmolVLA first (pipeline validation), then re-run with MODEL_TYPE="act" for ACT.
+MODEL_TYPE="smolvla"  # smolvla | act
+RUN_NAME="test_qwen_data"
+DATASET_NAMES=(qwen_data)
 DATASET_ROOT="/scratch0/${WORKFLOW_USER}/lerobot_datasets"
-SAVE_FREQ=1000
+SAVE_FREQ=50
 
 # -------- Preprocessing controls --------
 # If true, convert cleaned_datasets -> lerobot_datasets on GPU right before training.
-PREPROCESS_ON_GPU=false
+PREPROCESS_ON_GPU=true
 REMOTE_CLEANED_DATASET_ROOT="/scratch0/${WORKFLOW_USER}/cleaned_datasets"
 PREPROCESS_VCODEC="h264_nvenc"
+# Primary camera for the convert step; mapped to observation.images.top in LeRobotDataset.
+PRIMARY_CAMERA="ee_zed_m_left"
+# Default task description written into annotations.jsonl for every episode.
+TASK_DESCRIPTION="Looking at objects"
 # -------- Training hyperparameters --------
-STEPS=100000
+# STEPS is intentionally tiny — this run is a pipeline/data-feed validation only.
+STEPS=50
 BATCH_SIZE=4
 NUM_WORKERS=4
 LOG_FREQ=50
@@ -47,7 +53,7 @@ ALLOW_MISSING_TASK_FALLBACK=true
 
 # -------- SSH topology --------
 REMOTE_USER="${WORKFLOW_USER}"
-GPU_NODE="hotrod.cs.ucl.ac.uk"
+GPU_NODE="bumblebee.cs.ucl.ac.uk"
 JUMP_HOST="knuckles.cs.ucl.ac.uk"
 # SSH key for passwordless access. Generate once with:
 #   ssh-keygen -t ed25519 -f ~/.ssh/ucl_key -N ""
@@ -61,6 +67,8 @@ REMOTE_SCRATCH_BASE="/scratch0/${REMOTE_USER}"
 # -------- Local paths --------
 LOCAL_PROJECT_ROOT="${DEFAULT_LOCAL_PROJECT_ROOT}"
 LOCAL_DATA_PULL_SOURCE="${LOCAL_PROJECT_ROOT}/lerobot_datasets"
+# Synced to REMOTE_CLEANED_DATASET_ROOT when PREPROCESS_ON_GPU=true.
+LOCAL_CLEANED_DATA_SOURCE="${LOCAL_PROJECT_ROOT}/cleaned_datasets"
 LOCAL_CHECKPOINTS_ROOT="${LOCAL_PROJECT_ROOT}/checkpoints"
 EXTRACT_FOLDER_NAME="${RUN_NAME}_${MODEL_TYPE}_full"
 

@@ -289,6 +289,15 @@ def merge(source_roots: list[Path], output_root: Path, force: bool) -> Path:
             )
         if info["fps"] != fps:
             raise ValueError(f"{root}: fps mismatch ({info['fps']} vs {fps})")
+        for key, feat in features.items():
+            other_feat = info.get("features", {}).get(key)
+            if other_feat is None:
+                raise ValueError(f"{root}: missing feature '{key}' (present in {source_roots[0]})")
+            if tuple(other_feat.get("shape", [])) != tuple(feat.get("shape", [])):
+                raise ValueError(
+                    f"{root}: feature '{key}' shape mismatch — "
+                    f"got {other_feat.get('shape')} expected {feat.get('shape')}"
+                )
 
     LOGGER.info("Merging %d datasets:", len(source_roots))
     for r, info in zip(source_roots, infos):
