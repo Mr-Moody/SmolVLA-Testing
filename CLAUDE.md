@@ -39,8 +39,6 @@ outputs/<name>_<model>/       ← training outputs
 
 **NEVER modify these existing files** (phase-conditioning work must not touch them):
 - `main.py`
-- `src/data_cleaner.py`
-- `src/data_converter.py`
 - `src/dataset_utils.py`
 - `src/labeler.py`
 - `src/create_labels.py`

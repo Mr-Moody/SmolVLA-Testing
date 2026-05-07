@@ -148,6 +148,8 @@ class SmolVLADatasetConverter:
         self.text_rows = load_text_rows(dataset_dir)
         self._annotations = load_annotations(dataset_dir)
         self._trims = load_trims(dataset_dir)
+        if self._trims:
+            LOGGER.info("Loaded %d episode trim(s) from trims.jsonl.", len(self._trims))
         self._subtasks = load_subtasks(dataset_dir)
         self.camera_frames = load_camera_frames(dataset_dir)
         if self.cameras is not None:
@@ -653,6 +655,20 @@ class SmolVLADatasetConverter:
 
     def build_episodes(self) -> list[dict[str, Any]]:
         episodes: list[dict[str, Any]] = []
+
+        n_start_events = sum(1 for r in self.episode_rows if r.get("event") == "episode_start")
+        n_end_events = sum(1 for r in self.episode_rows if r.get("event", "") == "epsisode_end")
+        if n_end_events > 0:
+            LOGGER.info(
+                "Episode boundaries: paired mode (%d start + %d end events).",
+                n_start_events, n_end_events,
+            )
+        else:
+            LOGGER.info(
+                "Episode boundaries: start-only fallback (%d start events, no end events found).",
+                n_start_events,
+            )
+
         boundaries = find_episode_boundaries(self.robot_rows, self.episode_rows)
         LOGGER.info("Found %d episode(s).", len(boundaries))
         if self.max_episodes is not None:
@@ -662,7 +678,10 @@ class SmolVLADatasetConverter:
             robot_slice = self.robot_rows[start_idx:end_idx]
             if not robot_slice:
                 continue
+            pre_trim_len = len(robot_slice)
             robot_slice = self._apply_episode_trim(episode_index, robot_slice)
+            if episode_index in self._trims and len(robot_slice) == pre_trim_len:
+                LOGGER.info("Episode %d: trim entry exists but produced no change.", episode_index)
             if self.max_steps_per_episode is not None:
                 robot_slice = robot_slice[: self.max_steps_per_episode]
             if len(robot_slice) < 2:

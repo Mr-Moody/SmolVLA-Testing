@@ -19,6 +19,10 @@ let videoLoadGeneration = 0;
 let videoStatusPollers = [];
 let videos = [];
 let seekRafId = null;
+let pendingSeekRafId = null;
+let pendingSeekOffset = null;
+let pendingSeekPreview = false;
+let lastRequestedOffset = null;
 let trimState = {
   start_s: 0,
   end_s: 0,
@@ -276,6 +280,9 @@ function primaryFrameDuration() {
 }
 
 function currentEpisodeOffset() {
+  if (lastRequestedOffset !== null && (!isPlaying || timelineSeekState.dragging || seekSuppressed)) {
+    return clampEpisodeOffset(lastRequestedOffset);
+  }
   const v0 = videos[0];
   if (!v0) return 0;
   return clampEpisodeOffset(v0.currentTime - primaryStart());
@@ -303,18 +310,80 @@ function videoTimeForOffset(cam, offset) {
   return info.start_s + Math.max(0, Math.min(offset, camDur));
 }
 
-function setAllVideosToOffset(offset) {
+function setVideoTime(video, time, preview = false) {
+  if (!video) return;
+  if (preview && typeof video.fastSeek === 'function') {
+    try {
+      video.fastSeek(time);
+      return;
+    } catch {
+      // Fall back to precise seeking below.
+    }
+  }
+  video.currentTime = time;
+}
+
+function applyAllVideosToOffset(offset, preview = false) {
   const ep = currentEpisode();
   if (!ep) return;
   const camNames = Object.keys(ep.cameras);
   const sharedOffset = clampEpisodeOffset(offset);
+  lastRequestedOffset = sharedOffset;
   camNames.forEach((cam, i) => {
     const v = videos[i];
     if (!v) return;
-    v.currentTime = videoTimeForOffset(cam, sharedOffset);
+    setVideoTime(v, videoTimeForOffset(cam, sharedOffset), preview);
   });
   updateSeekbar();
 }
+
+function setAllVideosToOffset(offset, options = {}) {
+  const sharedOffset = clampEpisodeOffset(offset);
+  lastRequestedOffset = sharedOffset;
+  if (options.deferred) {
+    pendingSeekOffset = sharedOffset;
+    pendingSeekPreview = Boolean(options.preview);
+    if (!pendingSeekRafId) {
+      pendingSeekRafId = requestAnimationFrame(() => {
+        pendingSeekRafId = null;
+        const nextOffset = pendingSeekOffset;
+        const preview = pendingSeekPreview;
+        pendingSeekOffset = null;
+        pendingSeekPreview = false;
+        if (nextOffset !== null) applyAllVideosToOffset(nextOffset, preview);
+      });
+    }
+    updateSeekbar();
+    return;
+  }
+  applyAllVideosToOffset(sharedOffset, Boolean(options.preview));
+}
+
+function finishPendingSeek() {
+  const nextOffset = pendingSeekOffset;
+  if (pendingSeekRafId) {
+    cancelAnimationFrame(pendingSeekRafId);
+    pendingSeekRafId = null;
+  }
+  pendingSeekOffset = null;
+  pendingSeekPreview = false;
+  if (nextOffset !== null) {
+    applyAllVideosToOffset(nextOffset, false);
+  } else if (lastRequestedOffset !== null) {
+    applyAllVideosToOffset(lastRequestedOffset, false);
+  }
+}
+
+function clearPendingSeek() {
+  if (pendingSeekRafId) {
+    cancelAnimationFrame(pendingSeekRafId);
+    pendingSeekRafId = null;
+  }
+  pendingSeekOffset = null;
+  pendingSeekPreview = false;
+  lastRequestedOffset = null;
+}
+
 
 function offsetFromTimelinePointer(element, clientX) {
   if (!element) return currentEpisodeOffset();
@@ -329,11 +398,13 @@ function beginTimelineSeek(element, event) {
   timelineSeekState.element = element;
   event.preventDefault();
   document.body.classList.add('timeline-seeking');
-  setAllVideosToOffset(offsetFromTimelinePointer(element, event.clientX));
+  if (isPlaying) pauseAll();
+  setAllVideosToOffset(offsetFromTimelinePointer(element, event.clientX), { deferred: true, preview: true });
 }
 
 function endTimelineSeek() {
   if (!timelineSeekState.dragging) return;
+  finishPendingSeek();
   timelineSeekState.dragging = false;
   timelineSeekState.element = null;
   document.body.classList.remove('timeline-seeking');
@@ -426,7 +497,10 @@ function setTrimBoundary(handle, nextValue) {
   trimState.end_s = clampTrimValue(trimState.end_s);
   updateTrimDirtyState();
   updateTrimUi();
-  setAllVideosToOffset((handle === 'start' ? trimState.start_s : trimState.end_s) - primaryStart());
+  setAllVideosToOffset((handle === 'start' ? trimState.start_s : trimState.end_s) - primaryStart(), {
+    deferred: true,
+    preview: true,
+  });
 }
 
 function trimValueFromPointer(clientX) {
@@ -524,7 +598,7 @@ function updateSubtaskBoundary(idx, value) {
   subtaskState.boundaries[idx] = Math.max(minVal, Math.min(value, maxVal));
   subtaskState.dirty = true;
   updateSubtaskUi();
-  setAllVideosToOffset(subtaskState.boundaries[idx] - primaryStart());
+  setAllVideosToOffset(subtaskState.boundaries[idx] - primaryStart(), { deferred: true, preview: true });
 }
 
 function beginSubtaskDrag(idx, event) {
@@ -538,6 +612,7 @@ function beginSubtaskDrag(idx, event) {
 
 function endSubtaskDrag() {
   if (subtaskState.draggingBoundary === null) return;
+  finishPendingSeek();
   document.body.classList.remove('subtask-dragging');
   document.getElementById(`subtask-boundary-${subtaskState.draggingBoundary}`)?.classList.remove('dragging');
   subtaskState.draggingBoundary = null;
@@ -637,6 +712,7 @@ function loadEpisode(idx) {
   if (!episodes.length) return;
   idx = Math.max(0, Math.min(idx, episodes.length - 1));
   currentEpIdx = idx;
+  clearPendingSeek();
   videoLoadGeneration += 1;
   const generation = videoLoadGeneration;
 
@@ -713,6 +789,7 @@ function playAll() {
   }
   videos.forEach(v => { if (v.src) v.play().catch(() => {}); });
   document.getElementById('btn-playpause').innerHTML = '<span class="btn-icon pause-bars"></span> Pause';
+  lastRequestedOffset = null;
   isPlaying = true;
   startSeekbarAnimation();
 }
@@ -720,6 +797,7 @@ function playAll() {
 function pauseAll() {
   videos.forEach(v => v.pause());
   document.getElementById('btn-playpause').innerHTML = '<span class="btn-icon">&#9654;</span>&nbsp;Play';
+  lastRequestedOffset = null;
   isPlaying = false;
   stopSeekbarAnimation();
 }
@@ -983,14 +1061,14 @@ const seekbar = document.getElementById('seekbar');
 seekbar.addEventListener('mousedown', () => { seekSuppressed = true; });
 seekbar.addEventListener('touchstart', () => { seekSuppressed = true; });
 seekbar.addEventListener('input', () => {
-  seekToFraction(seekbar.value / 1000);
+  setAllVideosToOffset((seekbar.value / 1000) * epDuration(), { deferred: true, preview: true });
   const dur = epDuration();
   document.getElementById('time-display').textContent = `${fmt((seekbar.value / 1000) * dur)} / ${fmt(dur)}`;
   updateTrimUi();
   updateSubtaskUi();
 });
-seekbar.addEventListener('mouseup', () => { seekSuppressed = false; updateSeekbar(); });
-seekbar.addEventListener('touchend', () => { seekSuppressed = false; updateSeekbar(); });
+seekbar.addEventListener('mouseup', () => { finishPendingSeek(); seekSuppressed = false; updateSeekbar(); });
+seekbar.addEventListener('touchend', () => { finishPendingSeek(); seekSuppressed = false; updateSeekbar(); });
 
 const trimTimeline = document.getElementById('trim-timeline');
 const trimHandleStart = document.getElementById('trim-handle-start');
@@ -1007,6 +1085,7 @@ function beginTrimDrag(handle, event) {
 
 function endTrimDrag() {
   if (!trimState.dragging) return;
+  finishPendingSeek();
   document.body.classList.remove('trim-dragging');
   document.getElementById(`trim-handle-${trimState.dragging}`)?.classList.remove('dragging');
   trimState.dragging = null;
@@ -1030,7 +1109,7 @@ subtaskTimeline.addEventListener('mousedown', event => {
 
 document.addEventListener('mousemove', event => {
   if (timelineSeekState.dragging) {
-    setAllVideosToOffset(offsetFromTimelinePointer(timelineSeekState.element, event.clientX));
+    setAllVideosToOffset(offsetFromTimelinePointer(timelineSeekState.element, event.clientX), { deferred: true, preview: true });
   }
   if (trimState.dragging) {
     setTrimBoundary(trimState.dragging, trimValueFromPointer(event.clientX));
