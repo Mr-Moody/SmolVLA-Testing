@@ -168,20 +168,24 @@ def get_first_episode_frame_range(dataset_dir, primary_camera="d405_rgb"):
         print("WARNING: No episode events found")
         return None
     
-    # Get the first episode start timestamp
-    first_event = events[0]
-    if first_event.get("event") != "episode_start":
-        print(f"WARNING: First event is not episode_start: {first_event}")
-        return None
-    
-    first_ep_start_ns = first_event.get("robot_timestamp_ns")
-    
-    # Get the second episode start timestamp (or use end of video if only one episode)
+    # Find the first explicit start/end pair.
+    first_ep_start_ns = None
     first_ep_end_ns = None
-    if len(events) > 1:
-        second_event = events[1]
-        if second_event.get("event") == "episode_start":
-            first_ep_end_ns = second_event.get("robot_timestamp_ns")
+    seen_start = False
+    for event in events:
+        event_name = event.get("event")
+        event_ts = event.get("robot_timestamp_ns")
+        if event_name == "episode_start" and first_ep_start_ns is None:
+            first_ep_start_ns = event_ts
+            seen_start = True
+            continue
+        if seen_start and event_name == "episode_end":
+            first_ep_end_ns = event_ts
+            break
+
+    if first_ep_start_ns is None:
+        print("WARNING: No episode_start event found")
+        return None
     
     # Load camera frames metadata to map timestamps to frame indices
     frames_jsonl_path = Path(dataset_dir) / "cameras" / primary_camera / "frames.jsonl"
@@ -217,7 +221,7 @@ def get_first_episode_frame_range(dataset_dir, primary_camera="d405_rgb"):
             end_frame_idx = i
             break
     
-    # If we didn't find an end frame, use the last frame
+    # If we didn't find an end frame, use the last frame in the first episode window.
     if end_frame_idx is None:
         end_frame_idx = len(frame_metas)
     

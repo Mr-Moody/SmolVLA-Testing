@@ -14,9 +14,9 @@ REMOTE_PROJECT_DIRNAME="smolvla_project"
 
 # -------- Core run controls --------
 MODEL_TYPE="act"  # smolvla | act
-RUN_NAME="test_100_101_102_103"
-DATASET_NAMES=(100 101 102 103)
-DATASET_ROOT="/scratch0/${WORKFLOW_USER}/lerobot_datasets"
+RUN_NAME="qwen"
+DATASET_NAMES=(201_1)
+DATASET_ROOT="/scratch0/${WORKFLOW_USER}/cleaned_datasets"
 SAVE_FREQ=1000
 
 # -------- Preprocessing controls --------
@@ -52,7 +52,7 @@ ALLOW_MISSING_TASK_FALLBACK=true
 
 # -------- SSH topology --------
 REMOTE_USER="${WORKFLOW_USER}"
-GPU_NODE="hotrod.cs.ucl.ac.uk"
+GPU_NODE="prowl.cs.ucl.ac.uk"
 JUMP_HOST="knuckles.cs.ucl.ac.uk"
 # SSH key for passwordless access. Generate once with:
 #   ssh-keygen -t ed25519 -f ~/.ssh/ucl_key -N ""
