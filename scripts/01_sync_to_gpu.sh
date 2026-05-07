@@ -18,7 +18,7 @@ echo "Remote home detected as: ${REMOTE_HOME_DIR}"
 
 # Ensure destination directories exist.
 ssh ${SSH_OPTS} -J "${SSH_JUMP}" "${SSH_REMOTE}" \
-  "mkdir -p '${REMOTE_CODE_DIR}' '${REMOTE_SCRATCH_BASE}/lerobot_datasets' '${REMOTE_CLEANED_DATASET_ROOT}'"
+  "mkdir -p '${REMOTE_CODE_DIR}' '${REMOTE_SCRATCH_BASE}/cleaned_datasets' '${REMOTE_CLEANED_DATASET_ROOT}'"
 
 # Code to persistent home (lightweight only).
 rsync -avz --progress \
@@ -51,7 +51,7 @@ else
     rsync -avzP \
       -e "ssh ${SSH_OPTS} -J ${SSH_JUMP}" \
       "${LOCAL_DATA_PULL_SOURCE}/${ds}/" \
-      "${SSH_REMOTE}:${REMOTE_SCRATCH_BASE}/lerobot_datasets/${ds}/"
+      "${SSH_REMOTE}:${REMOTE_SCRATCH_BASE}/cleaned_datasets/${ds}/"
   done
 fi
 

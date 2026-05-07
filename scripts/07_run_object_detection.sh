@@ -39,7 +39,7 @@ export UV_CACHE_DIR="/scratch0/xparker/.cache/uv"
 FRAMES="${1:-0}"
 GPU_MEM="${2:-0.98}"
 MAX_LEN="${3:-4096}"
-DATA_NAME="${4:-double_d405}"
+DATA_NAME="${4:-201_1}"
 
 # Handle named args
 while [[ $# -gt 0 ]]; do
