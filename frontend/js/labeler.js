@@ -1,11 +1,16 @@
 // ── Constants ─────────────────────────────────────────────────────────────
-const SUBTASK_PHASES = [
-  { id: 'approach_can',  label: 'Approach Can',   color: 'rgba(99,102,241,0.82)'  },
-  { id: 'grasp_can',     label: 'Grasp Can',      color: 'rgba(168,85,247,0.82)'  },
-  { id: 'lift_can',      label: 'Lift Can',       color: 'rgba(236,72,153,0.82)'  },
-  { id: 'move_to_tray',  label: 'Move to Tray',   color: 'rgba(6,182,212,0.82)'   },
-  { id: 'release_can',   label: 'Release Can',    color: 'rgba(52,211,153,0.82)'  },
-  { id: 'retract_arm',   label: 'Retract Arm',    color: 'rgba(245,158,11,0.82)'  },
+const CHANNEL_COLORS = [
+  'rgba(99,102,241,0.82)',  'rgba(168,85,247,0.82)', 'rgba(236,72,153,0.82)',
+  'rgba(6,182,212,0.82)',   'rgba(52,211,153,0.82)', 'rgba(245,158,11,0.82)',
+  'rgba(251,191,36,0.82)',  'rgba(34,211,238,0.82)',
+];
+const DEFAULT_CHANNEL_DEFS = [
+  { id: 'approach_can',  label: 'Approach Can',  color: CHANNEL_COLORS[0] },
+  { id: 'grasp_can',     label: 'Grasp Can',     color: CHANNEL_COLORS[1] },
+  { id: 'lift_can',      label: 'Lift Can',      color: CHANNEL_COLORS[2] },
+  { id: 'move_to_tray',  label: 'Move to Tray',  color: CHANNEL_COLORS[3] },
+  { id: 'release_can',   label: 'Release Can',   color: CHANNEL_COLORS[4] },
+  { id: 'retract_arm',   label: 'Retract Arm',   color: CHANNEL_COLORS[5] },
 ];
 
 // ── State ──────────────────────────────────────────────────────────────────
@@ -34,8 +39,8 @@ let timelineSeekState = {
   element: null,
 };
 let subtaskState = {
-  boundaries: [],       // 4 absolute video-time values dividing 5 phases
-  draggingBoundary: null,
+  channels: [],  // [{ id, label, color, clip: { start_s, end_s } }, ...]
+  drag: null,    // { type: 'move'|'resize-left'|'resize-right', channelId, startX, origStart, origEnd }
   dirty: false,
 };
 
@@ -510,159 +515,243 @@ function trimValueFromPointer(clientX) {
   return primaryStart() + frac * epDuration();
 }
 
-// ── Subtask timeline ───────────────────────────────────────────────────────
+// ── Subtask channels ───────────────────────────────────────────────────────
+function loadChannelDefs() {
+  try {
+    const raw = localStorage.getItem('subtask_channel_defs');
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+    }
+  } catch { /* fall through */ }
+  return DEFAULT_CHANNEL_DEFS.map(d => ({ ...d }));
+}
+
+function saveChannelDefs() {
+  const defs = subtaskState.channels.map(({ id, label, color }) => ({ id, label, color }));
+  localStorage.setItem('subtask_channel_defs', JSON.stringify(defs));
+}
+
+function nextChannelColor() {
+  return CHANNEL_COLORS[subtaskState.channels.length % CHANNEL_COLORS.length];
+}
+
 function buildSubtaskTimeline() {
-  const timeline = document.getElementById('subtask-timeline');
-  const labelsEl = document.getElementById('subtask-time-labels');
-  if (!timeline || !labelsEl) return;
+  const container = document.getElementById('subtask-channels');
+  if (!container) return;
+  container.innerHTML = '';
+  subtaskState.channels.forEach(ch => {
+    container.appendChild(buildChannelRow(ch));
+  });
+}
 
-  timeline.innerHTML = '';
-  labelsEl.innerHTML = '';
+function buildChannelRow(ch) {
+  const row = document.createElement('div');
+  row.className = 'ch-row';
+  row.dataset.channelId = ch.id;
 
-  SUBTASK_PHASES.forEach((phase, i) => {
-    const seg = document.createElement('div');
-    seg.className = 'subtask-segment';
-    seg.id = `subtask-seg-${i}`;
-    seg.style.background = phase.color;
-    const label = document.createElement('span');
-    label.className = 'subtask-segment-label';
-    label.textContent = phase.label;
-    seg.appendChild(label);
-    timeline.appendChild(seg);
+  const labelCol = document.createElement('div');
+  labelCol.className = 'ch-label-col';
+
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.className = 'ch-label-input';
+  input.value = ch.label;
+  input.addEventListener('input', () => {
+    ch.label = input.value;
+    const clipLabel = row.querySelector('.ch-clip-label');
+    if (clipLabel) clipLabel.textContent = ch.label;
+    saveChannelDefs();
   });
 
-  for (let i = 0; i < SUBTASK_PHASES.length - 1; i++) {
-    const handle = document.createElement('div');
-    handle.className = 'subtask-boundary';
-    handle.id = `subtask-boundary-${i}`;
-    const line = document.createElement('div');
-    line.className = 'subtask-boundary-line';
-    handle.appendChild(line);
-    handle.addEventListener('mousedown', e => beginSubtaskDrag(i, e));
-    timeline.appendChild(handle);
-  }
+  const delBtn = document.createElement('button');
+  delBtn.className = 'ch-delete-btn';
+  delBtn.title = 'Delete channel';
+  delBtn.textContent = '×';
+  delBtn.addEventListener('click', () => deleteChannel(ch.id));
+
+  labelCol.appendChild(input);
+  labelCol.appendChild(delBtn);
+
+  const track = document.createElement('div');
+  track.className = 'ch-track';
+  track.dataset.channelId = ch.id;
+
+  const clip = document.createElement('div');
+  clip.className = 'ch-clip';
+  clip.dataset.channelId = ch.id;
+  clip.style.background = ch.color;
+
+  const resizeLeft = document.createElement('div');
+  resizeLeft.className = 'ch-resize-left';
+  resizeLeft.dataset.channelId = ch.id;
+
+  const clipLabel = document.createElement('span');
+  clipLabel.className = 'ch-clip-label';
+  clipLabel.textContent = ch.label;
+
+  const resizeRight = document.createElement('div');
+  resizeRight.className = 'ch-resize-right';
+  resizeRight.dataset.channelId = ch.id;
+
+  clip.appendChild(resizeLeft);
+  clip.appendChild(clipLabel);
+  clip.appendChild(resizeRight);
 
   const playhead = document.createElement('div');
-  playhead.id = 'subtask-playhead';
-  timeline.appendChild(playhead);
+  playhead.className = 'ch-playhead';
+  playhead.dataset.channelId = ch.id;
 
-  for (let i = 0; i < SUBTASK_PHASES.length - 1; i++) {
-    const label = document.createElement('span');
-    label.className = 'subtask-time-label';
-    label.id = `subtask-time-${i}`;
-    labelsEl.appendChild(label);
-  }
+  track.appendChild(clip);
+  track.appendChild(playhead);
+
+  row.appendChild(labelCol);
+  row.appendChild(track);
+  return row;
 }
 
 function initializeSubtaskState() {
   const ep = currentEpisode();
-  subtaskState.draggingBoundary = null;
+  subtaskState.drag = null;
   subtaskState.dirty = false;
 
+  const defs = loadChannelDefs();
   if (!ep) {
-    subtaskState.boundaries = [];
+    subtaskState.channels = defs.map(d => ({ ...d, clip: { start_s: 0, end_s: 0 } }));
+    buildSubtaskTimeline();
     updateSubtaskUi();
     return;
   }
 
   const trimStart = currentTrimStart();
   const trimEnd = currentTrimEnd();
-  const trimDur = trimEnd - trimStart;
+  const trimDur = Math.max(0, trimEnd - trimStart);
+  const N = defs.length;
 
-  const nBounds = SUBTASK_PHASES.length - 1;
-  if (ep.subtasks && ep.subtasks.length === SUBTASK_PHASES.length) {
-    subtaskState.boundaries = ep.subtasks.slice(0, nBounds).map(s => s.end_s);
-  } else {
-    subtaskState.boundaries = Array.from({ length: nBounds }, (_, i) =>
-      trimStart + trimDur * ((i + 1) / SUBTASK_PHASES.length)
-    );
-  }
+  subtaskState.channels = defs.map((def, i) => {
+    const saved = ep.subtasks?.find(s => s.phase === def.id);
+    const clip = saved
+      ? { start_s: saved.start_s, end_s: saved.end_s }
+      : { start_s: trimStart + i * (trimDur / N), end_s: trimStart + (i + 1) * (trimDur / N) };
+    return { ...def, clip };
+  });
+
+  buildSubtaskTimeline();
   updateSubtaskUi();
-}
-
-function subtaskBoundaryFromPointer(clientX) {
-  const timeline = document.getElementById('subtask-timeline');
-  if (!timeline) return currentTrimStart();
-  const rect = timeline.getBoundingClientRect();
-  const frac = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
-  return primaryStart() + frac * epDuration();
-}
-
-function updateSubtaskBoundary(idx, value) {
-  const MIN_GAP = 0.05;
-  const trimStart = currentTrimStart();
-  const trimEnd = currentTrimEnd();
-  const allBounds = [trimStart, ...subtaskState.boundaries, trimEnd];
-  const minVal = allBounds[idx] + MIN_GAP;
-  const maxVal = allBounds[idx + 2] - MIN_GAP;
-  subtaskState.boundaries[idx] = Math.max(minVal, Math.min(value, maxVal));
-  subtaskState.dirty = true;
-  updateSubtaskUi();
-  setAllVideosToOffset(subtaskState.boundaries[idx] - primaryStart(), { deferred: true, preview: true });
-}
-
-function beginSubtaskDrag(idx, event) {
-  if (!episodes.length) return;
-  subtaskState.draggingBoundary = idx;
-  event.preventDefault();
-  document.body.classList.add('subtask-dragging');
-  document.getElementById(`subtask-boundary-${idx}`)?.classList.add('dragging');
-  updateSubtaskBoundary(idx, subtaskBoundaryFromPointer(event.clientX));
-}
-
-function endSubtaskDrag() {
-  if (subtaskState.draggingBoundary === null) return;
-  finishPendingSeek();
-  document.body.classList.remove('subtask-dragging');
-  document.getElementById(`subtask-boundary-${subtaskState.draggingBoundary}`)?.classList.remove('dragging');
-  subtaskState.draggingBoundary = null;
 }
 
 function updateSubtaskUi() {
   const saveBtn = document.getElementById('btn-save-subtasks');
-  if (!episodes.length || !subtaskState.boundaries.length) {
+  const dur = epDuration();
+
+  if (!episodes.length || !subtaskState.channels.length || dur <= 0) {
     if (saveBtn) saveBtn.disabled = true;
     return;
   }
 
-  const trimStart = currentTrimStart();
-  const trimEnd = currentTrimEnd();
-  const dur = epDuration();
-  if (dur <= 0 || trimEnd <= trimStart) return;
+  const playheadPct = videos[0] ? episodePctForTime(videos[0].currentTime) : 0;
 
-  const allBounds = [trimStart, ...subtaskState.boundaries, trimEnd];
-  const start = primaryStart();
-
-  SUBTASK_PHASES.forEach((_, i) => {
-    const seg = document.getElementById(`subtask-seg-${i}`);
-    if (!seg) return;
-    const leftPct = episodePctForTime(allBounds[i]);
-    const rightPct = episodePctForTime(allBounds[i + 1]);
-    seg.style.left = `${leftPct}%`;
-    seg.style.width = `${Math.max(0, rightPct - leftPct)}%`;
+  subtaskState.channels.forEach(ch => {
+    const clip = document.querySelector(`.ch-clip[data-channel-id="${CSS.escape(ch.id)}"]`);
+    if (clip) {
+      const leftPct = episodePctForTime(ch.clip.start_s);
+      const rightPct = episodePctForTime(ch.clip.end_s);
+      clip.style.left = `${leftPct}%`;
+      clip.style.width = `${Math.max(0, rightPct - leftPct)}%`;
+    }
+    const ph = document.querySelector(`.ch-playhead[data-channel-id="${CSS.escape(ch.id)}"]`);
+    if (ph) ph.style.left = `${Math.max(0, Math.min(100, playheadPct))}%`;
   });
 
-  for (let i = 0; i < SUBTASK_PHASES.length - 1; i++) {
-    const handle = document.getElementById(`subtask-boundary-${i}`);
-    if (handle) {
-      const pct = episodePctForTime(subtaskState.boundaries[i]);
-      handle.style.left = `${pct}%`;
-    }
-    const timeLabel = document.getElementById(`subtask-time-${i}`);
-    if (timeLabel) {
-      const pct = episodePctForTime(subtaskState.boundaries[i]);
-      timeLabel.style.left = `${pct}%`;
-      timeLabel.textContent = fmt(subtaskState.boundaries[i] - start);
-    }
-  }
-
-  const playhead = document.getElementById('subtask-playhead');
-  if (playhead && videos[0]) {
-    const pct = episodePctForTime(videos[0].currentTime);
-    playhead.style.left = `${Math.max(0, Math.min(100, pct))}%`;
-  }
-
   if (saveBtn) saveBtn.disabled = !subtaskState.dirty;
+}
+
+function beginSubtaskDrag(type, channelId, event) {
+  if (!episodes.length) return;
+  const ch = subtaskState.channels.find(c => c.id === channelId);
+  if (!ch) return;
+  subtaskState.drag = {
+    type,
+    channelId,
+    startX: event.clientX,
+    origStart: ch.clip.start_s,
+    origEnd: ch.clip.end_s,
+  };
+  event.preventDefault();
+  document.body.classList.add('subtask-dragging');
+}
+
+function updateSubtaskDrag(clientX) {
+  if (!subtaskState.drag) return;
+  const { type, channelId, startX, origStart, origEnd } = subtaskState.drag;
+  const ch = subtaskState.channels.find(c => c.id === channelId);
+  if (!ch) return;
+
+  const trackEl = document.querySelector('.ch-track');
+  if (!trackEl) return;
+  const trackWidth = trackEl.getBoundingClientRect().width;
+  const dur = epDuration();
+  if (trackWidth <= 0 || dur <= 0) return;
+
+  const MIN_CLIP = 0.05;
+  const pxPerSec = trackWidth / dur;
+  const deltaT = (clientX - startX) / pxPerSec;
+
+  if (type === 'move') {
+    const clipDur = origEnd - origStart;
+    const newStart = Math.max(primaryStart(), Math.min(origStart + deltaT, primaryEnd() - clipDur));
+    ch.clip.start_s = newStart;
+    ch.clip.end_s = newStart + clipDur;
+  } else if (type === 'resize-left') {
+    const newStart = Math.max(primaryStart(), Math.min(origStart + deltaT, origEnd - MIN_CLIP));
+    ch.clip.start_s = newStart;
+    setAllVideosToOffset(newStart - primaryStart(), { deferred: true, preview: true });
+  } else if (type === 'resize-right') {
+    const newEnd = Math.max(origStart + MIN_CLIP, Math.min(origEnd + deltaT, primaryEnd()));
+    ch.clip.end_s = newEnd;
+    setAllVideosToOffset(newEnd - primaryStart(), { deferred: true, preview: true });
+  }
+
+  subtaskState.dirty = true;
+  updateSubtaskUi();
+}
+
+function endSubtaskDrag() {
+  if (!subtaskState.drag) return;
+  if (subtaskState.drag.type !== 'move') finishPendingSeek();
+  document.body.classList.remove('subtask-dragging');
+  subtaskState.drag = null;
+}
+
+function addChannel() {
+  if (!episodes.length) return;
+  const trimStart = currentTrimStart();
+  const trimEnd = currentTrimEnd();
+  const trimDur = Math.max(0, trimEnd - trimStart);
+  const id = 'channel_' + Date.now();
+  const color = nextChannelColor();
+  subtaskState.channels.push({
+    id,
+    label: 'New Channel',
+    color,
+    clip: { start_s: trimStart + trimDur * 0.4, end_s: trimStart + trimDur * 0.6 },
+  });
+  saveChannelDefs();
+  buildSubtaskTimeline();
+  updateSubtaskUi();
+  subtaskState.dirty = true;
+  const saveBtn = document.getElementById('btn-save-subtasks');
+  if (saveBtn) saveBtn.disabled = false;
+}
+
+function deleteChannel(channelId) {
+  subtaskState.channels = subtaskState.channels.filter(c => c.id !== channelId);
+  saveChannelDefs();
+  buildSubtaskTimeline();
+  updateSubtaskUi();
+  subtaskState.dirty = true;
+  const saveBtn = document.getElementById('btn-save-subtasks');
+  if (saveBtn) saveBtn.disabled = false;
 }
 
 // ── Dataset loading ─────────────────────────────────────────────────────────
@@ -695,8 +784,10 @@ async function selectDataset(name) {
     document.getElementById('task-input').value = '';
     document.getElementById('ep-annotation-status').textContent = '';
     document.getElementById('trim-display').textContent = '—';
-    subtaskState.boundaries = [];
+    subtaskState.channels = [];
+    subtaskState.drag = null;
     subtaskState.dirty = false;
+    buildSubtaskTimeline();
     pauseAll();
     updateProgressBadge();
     return;
@@ -934,13 +1025,10 @@ async function saveTrim(silent = false) {
 async function saveSubtasks(silent = false) {
   if (!currentDataset || !episodes.length) return;
   const ep = currentEpisode();
-  const trimStart = currentTrimStart();
-  const trimEnd = currentTrimEnd();
-  const allBounds = [trimStart, ...subtaskState.boundaries, trimEnd];
-  const subtasks = SUBTASK_PHASES.map((phase, i) => ({
-    phase: phase.id,
-    start_s: Number(allBounds[i].toFixed(4)),
-    end_s: Number(allBounds[i + 1].toFixed(4)),
+  const subtasks = subtaskState.channels.map(ch => ({
+    phase:   ch.id,
+    start_s: Number(ch.clip.start_s.toFixed(4)),
+    end_s:   Number(ch.clip.end_s.toFixed(4)),
   }));
   const res = await fetch(`/api/datasets/${currentDataset}/episodes/${ep.index}/subtasks`, {
     method: 'POST',
@@ -1100,11 +1188,16 @@ trimTimeline.addEventListener('mousedown', event => {
   beginTimelineSeek(trimTimeline, event);
 });
 
-const subtaskTimeline = document.getElementById('subtask-timeline');
-subtaskTimeline.addEventListener('mousedown', event => {
+document.getElementById('subtask-channels').addEventListener('mousedown', event => {
   if (!episodes.length) return;
-  if (event.target.closest('.subtask-boundary')) return;
-  beginTimelineSeek(subtaskTimeline, event);
+  const rL = event.target.closest('.ch-resize-left');
+  const rR = event.target.closest('.ch-resize-right');
+  const cl = event.target.closest('.ch-clip');
+  const tr = event.target.closest('.ch-track');
+  if (rL)      beginSubtaskDrag('resize-left',  rL.dataset.channelId, event);
+  else if (rR) beginSubtaskDrag('resize-right', rR.dataset.channelId, event);
+  else if (cl) beginSubtaskDrag('move',         cl.dataset.channelId, event);
+  else if (tr) beginTimelineSeek(tr, event);
 });
 
 document.addEventListener('mousemove', event => {
@@ -1114,8 +1207,8 @@ document.addEventListener('mousemove', event => {
   if (trimState.dragging) {
     setTrimBoundary(trimState.dragging, trimValueFromPointer(event.clientX));
   }
-  if (subtaskState.draggingBoundary !== null) {
-    updateSubtaskBoundary(subtaskState.draggingBoundary, subtaskBoundaryFromPointer(event.clientX));
+  if (subtaskState.drag !== null) {
+    updateSubtaskDrag(event.clientX);
   }
 });
 
@@ -1126,5 +1219,6 @@ document.addEventListener('mouseup', () => {
 });
 
 // ── Boot ──────────────────────────────────────────────────────────────────
+document.getElementById('btn-add-channel').addEventListener('click', addChannel);
 buildSubtaskTimeline();
 loadDatasets();
