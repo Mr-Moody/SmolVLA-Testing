@@ -51,7 +51,11 @@
       <span class="timeline-side-spacer"></span>
     </div>
     <div id="trim-row">
-      <span class="panel-label">Crop</span>
+      <div id="trim-label-col">
+        <span class="panel-label">Crop</span>
+        <span id="trim-display">—</span>
+        <button id="btn-save-trim">Save</button>
+      </div>
       <div id="trim-timeline-wrap">
         <div id="trim-timeline">
           <div id="trim-region"></div>
@@ -59,10 +63,6 @@
           <div id="trim-handle-end" class="trim-handle trim-handle-end"></div>
           <div id="trim-playhead"></div>
         </div>
-      </div>
-      <div class="timeline-side-controls">
-        <span id="trim-display">—</span>
-        <button id="btn-save-trim">Save</button>
       </div>
     </div>
   </div>
@@ -80,7 +80,10 @@
         <span class="panel-label">Subtasks</span>
         <button id="btn-add-channel" class="btn-add-channel">+ Channel</button>
       </div>
-      <div id="subtask-channels"></div>
+      <div id="subtask-track-area">
+        <div id="subtask-channels"></div>
+        <div id="subtask-playhead"></div>
+      </div>
     </div>
     <div id="submit-row">
       <button id="btn-submit" class="btn-primary">Save annotation</button>

@@ -615,11 +615,6 @@ function buildChannelRow(ch) {
 
   ch.clips.forEach((_, i) => track.appendChild(buildClipEl(ch, i)));
 
-  const playhead = document.createElement('div');
-  playhead.className = 'ch-playhead';
-  playhead.dataset.channelId = ch.id;
-  track.appendChild(playhead);
-
   row.appendChild(labelCol);
   row.appendChild(track);
   return row;
@@ -696,6 +691,8 @@ function updateSubtaskUi() {
 
   if (!episodes.length || !subtaskState.channels.length || dur <= 0) {
     if (saveBtn) saveBtn.disabled = true;
+    const ph = document.getElementById('subtask-playhead');
+    if (ph) ph.style.display = 'none';
     return;
   }
 
@@ -711,9 +708,13 @@ function updateSubtaskUi() {
         el.style.width = `${Math.max(0, episodePctForTime(clip.end_s) - episodePctForTime(clip.start_s))}%`;
       }
     });
-    const ph = document.querySelector(`.ch-playhead[data-channel-id="${CSS.escape(ch.id)}"]`);
-    if (ph) ph.style.left = `${Math.max(0, Math.min(100, playheadPct))}%`;
   });
+
+  const singlePh = document.getElementById('subtask-playhead');
+  if (singlePh) {
+    singlePh.style.setProperty('--subtask-ph-pct', (Math.max(0, Math.min(100, playheadPct)) / 100).toFixed(4));
+    singlePh.style.display = 'block';
+  }
 
   if (saveBtn) saveBtn.disabled = !subtaskState.dirty;
 }
