@@ -17,7 +17,7 @@ REMOTE_PROJECT_DIRNAME="smolvla_project"
 MODEL_TYPE="act"  # smolvla | act
 RUN_NAME="test_qwen"
 DATASET_NAMES=(201_1)
-DATASET_ROOT="/scratch0/${WORKFLOW_USER}/lerobot_datasets"
+DATASET_ROOT="/scratch0/${WORKFLOW_USER}/cleaned_datasets"
 SAVE_FREQ=1000
 
 # -------- Preprocessing controls --------
@@ -54,7 +54,7 @@ ALLOW_MISSING_TASK_FALLBACK=true
 
 # -------- SSH topology --------
 REMOTE_USER="${WORKFLOW_USER}"
-GPU_NODE="sentinel.cs.ucl.ac.uk"
+GPU_NODE="prowl.cs.ucl.ac.uk"
 JUMP_HOST="knuckles.cs.ucl.ac.uk"
 # SSH key for passwordless access. Generate once with:
 #   ssh-keygen -t ed25519 -f ~/.ssh/ucl_key -N ""
@@ -67,7 +67,7 @@ REMOTE_SCRATCH_BASE="/scratch0/${REMOTE_USER}"
 
 # -------- Local paths --------
 LOCAL_PROJECT_ROOT="${DEFAULT_LOCAL_PROJECT_ROOT}"
-LOCAL_DATA_PULL_SOURCE="${LOCAL_PROJECT_ROOT}/lerobot_datasets"
+LOCAL_DATA_PULL_SOURCE="${LOCAL_PROJECT_ROOT}/cleaned_datasets"
 LOCAL_CHECKPOINTS_ROOT="${LOCAL_PROJECT_ROOT}/checkpoints"
 EXTRACT_FOLDER_NAME="${RUN_NAME}_${MODEL_TYPE}_full"
 
