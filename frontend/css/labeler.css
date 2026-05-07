@@ -715,6 +715,10 @@ video {
   flex-direction: column;
   gap: var(--ch-row-gap);
   padding: 2px 0 4px;
+  height: calc(5 * (var(--ch-track-height) + var(--ch-row-gap)));
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-2) transparent;
 }
 
 .ch-row {
