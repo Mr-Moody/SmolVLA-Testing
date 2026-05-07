@@ -1,5 +1,6 @@
 # Shared workflow parameters for sync, training, and extraction.
 # Dot-source this from other scripts:  . "$SCRIPT_DIR/00_run_params.ps1"
+# No need to run it directly
 
 $PARAMS_DIR                 = Split-Path -Parent $MyInvocation.MyCommand.Path
 $DEFAULT_LOCAL_PROJECT_ROOT = (Resolve-Path (Join-Path $PARAMS_DIR '..')).Path
