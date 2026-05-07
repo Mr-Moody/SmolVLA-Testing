@@ -286,23 +286,29 @@ def create_subtask_prompt(subtasks: list[str], history: list[str] | None = None)
 
     return (
 f"""You are labeling robot manipulation subtasks from synchronized camera frames.
-A frame may contain ONE or MULTIPLE simultaneous subtasks. Output all active subtasks.
+A frame may contain ONE or MULTIPLE simultaneous subtasks. It is common for frames to have 2 or more labels.
+Output all active subtasks occurring in the current frame.
 
-Subtask sequence (loosely followed, may repeat or occur together):
-1. approach_MSD_plug
-2. positioning_the_gripper
-3. grasp_the_plug
-4. move_the_plug_to_the_socket
-5. place_the_plug_in_the_socket
-6. nudging_the_plug_into_the_socket
-7. align_handle
-8. push_down_on_the_plug
+Subtask definitions:
+- approach_MSD_plug: Gripper moving toward the MSD plug before making contact. The arm trajectory is directed at the plug location.
+- positioning_the_gripper: Gripper is in contact with or very close to the plug, adjusting finger/hand orientation and position to achieve proper grasp alignment. Fine adjustments of grip points.
+- grasp_the_plug: Gripper fingers actively closing around the plug body to secure it with firm contact. This is the grasping action itself.
+- move_the_plug_to_the_socket: Plug is firmly held by the gripper, and the arm is moving the entire gripper+plug assembly toward the socket location. Large arm movements transporting the plug through space.
+- place_the_plug_in_the_socket: The plug is being inserted into the socket opening. This includes initial contact with the socket and partial insertion as the plug enters the socket cavity.
+- nudging_the_plug_into_the_socket: Small fine adjustments and rotations while the plug is partially or mostly inserted into the socket. Correcting alignment during insertion without large arm movements.
+- align_handle: The plug handle is being rotated or adjusted to achieve proper orientation and ensure flush seating with the socket connector.
+- push_down_on_the_plug: Applying downward or inward force on the plug to fully seat it into the socket. Final pressing action to complete the insertion.
+
+Important: Multiple subtasks often occur together in a single frame.
+Examples of valid multi-label frames:
+  - "positioning_the_gripper,grasp_the_plug" (adjusting position while fingers close)
+  - "move_the_plug_to_the_socket,place_the_plug_in_the_socket" (approaching socket and beginning insertion)
+  - "place_the_plug_in_the_socket,nudging_the_plug_into_the_socket" (insertion and fine adjustment happening simultaneously)
 
 Subtask options: {subtask_list}{history_text}
 
 Reply with a comma-separated list of ALL active subtasks (e.g., "move_the_plug_to_the_socket,align_handle").
-If multiple subtasks occur simultaneously, list them all. If only one subtask is active, respond with just that one."""
-    )
+Output all labels that apply to this frame. Do not overthink—if multiple actions are happening, list them all.""")
 
 
 def label_frame_with_context(
