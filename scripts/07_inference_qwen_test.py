@@ -13,6 +13,7 @@ Usage (on remote):
 
 import os
 import sys
+import json
 import argparse
 from pathlib import Path
 
@@ -145,6 +146,89 @@ def find_video_sources(video_path=None, data_name: str = "double_d405"):
     fallback = sorted(Path(p) for p in glob.glob(str(data_dir / "**" / "rgb.mp4"), recursive=True))
     return fallback
 
+
+def get_first_episode_frame_range(dataset_dir, primary_camera="d405_rgb"):
+    """Get the frame index range for the first episode.
+    
+    Returns tuple of (start_frame_idx, end_frame_idx) or None if not available.
+    """
+    # Load episode boundaries from episode_events.jsonl
+    episode_events_path = Path(dataset_dir) / "episode_events.jsonl"
+    if not episode_events_path.exists():
+        print(f"WARNING: Could not find episode_events.jsonl at {episode_events_path}")
+        return None
+    
+    events = []
+    with open(episode_events_path) as f:
+        for line in f:
+            if line.strip():
+                events.append(json.loads(line))
+    
+    if len(events) < 1:
+        print("WARNING: No episode events found")
+        return None
+    
+    # Get the first episode start timestamp
+    first_event = events[0]
+    if first_event.get("event") != "episode_start":
+        print(f"WARNING: First event is not episode_start: {first_event}")
+        return None
+    
+    first_ep_start_ns = first_event.get("robot_timestamp_ns")
+    
+    # Get the second episode start timestamp (or use end of video if only one episode)
+    first_ep_end_ns = None
+    if len(events) > 1:
+        second_event = events[1]
+        if second_event.get("event") == "episode_start":
+            first_ep_end_ns = second_event.get("robot_timestamp_ns")
+    
+    # Load camera frames metadata to map timestamps to frame indices
+    frames_jsonl_path = Path(dataset_dir) / "cameras" / primary_camera / "frames.jsonl"
+    if not frames_jsonl_path.exists():
+        print(f"WARNING: Could not find frames.jsonl at {frames_jsonl_path}")
+        return None
+    
+    frame_metas = []
+    with open(frames_jsonl_path) as f:
+        for line in f:
+            if line.strip():
+                frame_metas.append(json.loads(line))
+    
+    if not frame_metas:
+        print("WARNING: No frame metadata found")
+        return None
+    
+    # Find frames within the first episode's time range
+    start_frame_idx = None
+    end_frame_idx = None
+    
+    for i, frame_meta in enumerate(frame_metas):
+        frame_ns = frame_meta.get("host_timestamp_ns")
+        if frame_ns is None:
+            continue
+        
+        # Find first frame at or after episode start
+        if start_frame_idx is None and frame_ns >= first_ep_start_ns:
+            start_frame_idx = i
+        
+        # Find first frame at or after episode end (if we have one)
+        if first_ep_end_ns is not None and end_frame_idx is None and frame_ns >= first_ep_end_ns:
+            end_frame_idx = i
+            break
+    
+    # If we didn't find an end frame, use the last frame
+    if end_frame_idx is None:
+        end_frame_idx = len(frame_metas)
+    
+    if start_frame_idx is None:
+        print("WARNING: Could not map episode timestamps to frame indices")
+        return None
+    
+    print(f"First episode frames: {start_frame_idx} to {end_frame_idx - 1}")
+    return (start_frame_idx, end_frame_idx)
+
+
 def main():
     parser = argparse.ArgumentParser(description="Identify objects from video using Qwen3-VL")
     parser.add_argument("--video-path", 
@@ -155,6 +239,8 @@ def main():
                         help="Dataset folder name under /scratch0/<user>/cleaned_datasets (default: double_d405)")
     parser.add_argument("--frames-to-extract", type=int, default=0,
                         help="Number of frames to extract from video; 0 means all frames")
+    parser.add_argument("--sampling-hz", type=float, default=5.0,
+                        help="Frame sampling rate in Hz (default: 5.0 Hz, approximately every 6th frame at 30Hz)")
     parser.add_argument("--gpu-mem-util", type=float, default=0.98,
                         help="GPU memory utilization (0.0-1.0)")
     parser.add_argument("--max-model-len", type=int, default=4096,
@@ -210,6 +296,36 @@ def main():
     else:
         frame_indices = [int(i * frame_count / args.frames_to_extract) for i in range(args.frames_to_extract)]
         print(f"Processing {len(frame_indices)} synchronized timestamps sampled from {frame_count} total\n")
+
+    # Downsample to target sampling rate (Hz)
+    # Try to get video FPS from first video source
+    try:
+        import cv2
+        cap = cv2.VideoCapture(str(video_paths[0]))
+        video_fps = cap.get(cv2.CAP_PROP_FPS)
+        cap.release()
+        if video_fps <= 0:
+            video_fps = 30.0  # Default fallback
+    except Exception:
+        video_fps = 30.0  # Default fallback
+    
+    target_sampling_hz = args.sampling_hz
+    frame_interval = max(1, int(round(video_fps / target_sampling_hz)))
+    frame_indices = frame_indices[::frame_interval]
+    print(f"Downsampling to {target_sampling_hz:.1f} Hz (video fps: {video_fps:.1f}, keeping every {frame_interval}th frame)")
+    print(f"Final frame count after downsampling: {len(frame_indices)}\n")
+
+    # Filter to only first episode frames
+    dataset_dir = video_paths[0].parent.parent.parent  # cameras/<camera>/rgb.mp4 → cleaned_datasets/<name>
+    primary_camera = video_paths[0].parent.name  # e.g., "d405_rgb"
+    episode_range = get_first_episode_frame_range(dataset_dir, primary_camera)
+    
+    if episode_range:
+        start_frame, end_frame = episode_range
+        frame_indices = [i for i in frame_indices if start_frame <= i < end_frame]
+        print(f"Filtered to first episode: {len(frame_indices)} frame(s) to process\n")
+    else:
+        print("WARNING: Could not determine first episode range; processing all frames\n")
 
     all_objects = []
 
