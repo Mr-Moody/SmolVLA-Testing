@@ -547,6 +547,7 @@ video {
   flex: 1;
   display: flex;
   align-items: center;
+  padding: 0 5px;
 }
 
 #trim-timeline {
@@ -711,6 +712,7 @@ video {
   flex-direction: column;
   gap: 3px;
   min-width: 0;
+  padding: 0 5px;
 }
 
 #subtask-timeline-row {
