@@ -448,6 +448,8 @@ video {
 /* ── Transport ───────────────────────────────────────────────────────────── */
 
 #transport {
+  --timeline-label-col: 38px;
+  --timeline-side-col: 162px;
   flex-shrink: 0;
   background: var(--surface-0);
   border-top: 1px solid var(--border-1);
@@ -477,8 +479,24 @@ video {
 }
 
 .seekbar-row {
+  display: grid;
+  grid-template-columns: var(--timeline-label-col) minmax(0, 1fr) var(--timeline-side-col);
+  align-items: center;
+  gap: 10px;
+}
+
+.timeline-label-spacer,
+.timeline-side-spacer {
+  display: block;
+  min-width: 0;
+}
+
+.timeline-side-controls {
   display: flex;
   align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  min-width: 0;
 }
 
 #seekbar {
@@ -519,7 +537,8 @@ video {
 #seekbar:hover::-moz-range-thumb { background: var(--accent-hi); }
 
 #trim-row {
-  display: flex;
+  display: grid;
+  grid-template-columns: var(--timeline-label-col) minmax(0, 1fr) var(--timeline-side-col);
   align-items: center;
   gap: 10px;
 }
@@ -528,6 +547,7 @@ video {
   flex: 1;
   display: flex;
   align-items: center;
+  padding: 0 5px;
 }
 
 #trim-timeline {
@@ -537,7 +557,7 @@ video {
   background: var(--surface-2);
   border: 1px solid var(--border-2);
   border-radius: 3px;
-  cursor: crosshair;
+  cursor: pointer;
   user-select: none;
 }
 
@@ -608,7 +628,6 @@ video {
   white-space: nowrap;
   min-width: 96px;
   text-align: right;
-  flex-shrink: 0;
   font-feature-settings: "tnum";
 }
 
@@ -619,13 +638,14 @@ video {
   text-transform: uppercase;
   color: var(--text-3);
   user-select: none;
-  flex-shrink: 0;
 }
 
 
 /* ── Annotation ──────────────────────────────────────────────────────────── */
 
 #annotation-area {
+  --timeline-label-col: 38px;
+  --timeline-side-col: 162px;
   flex-shrink: 0;
   background: var(--surface-0);
   border-top: 1px solid var(--border-1);
@@ -691,6 +711,15 @@ video {
   display: flex;
   flex-direction: column;
   gap: 3px;
+  min-width: 0;
+  padding: 0 5px;
+}
+
+#subtask-timeline-row {
+  display: grid;
+  grid-template-columns: var(--timeline-label-col) minmax(0, 1fr) var(--timeline-side-col);
+  align-items: start;
+  gap: 10px;
 }
 
 #subtask-timeline {
@@ -702,6 +731,7 @@ video {
   user-select: none;
   background: var(--surface-2);
   border: 1px solid var(--border-2);
+  cursor: pointer;
 }
 
 .subtask-segment {
@@ -784,7 +814,8 @@ video {
 }
 
 body.trim-dragging,
-body.subtask-dragging {
+body.subtask-dragging,
+body.timeline-seeking {
   cursor: ew-resize;
   user-select: none;
 }

@@ -554,12 +554,13 @@ def _episode_list(dataset_name: str) -> list[dict[str, Any]]:
 
         cam_info: dict[str, dict[str, float]] = {}
         for cam_name in camera_data:
+            _, _, fps = camera_data[cam_name]
             start_s = ts_to_video_s(cam_name, start_ts)
             end_s = ts_to_video_s(cam_name, end_ts)
             # Ensure at least a tiny non-zero duration
             if end_s <= start_s:
                 end_s = start_s + 0.1
-            cam_info[cam_name] = {"start_s": round(start_s, 4), "end_s": round(end_s, 4)}
+            cam_info[cam_name] = {"start_s": round(start_s, 4), "end_s": round(end_s, 4), "fps": fps}
 
         trim = trims.get(ep_idx)
         episodes.append({
