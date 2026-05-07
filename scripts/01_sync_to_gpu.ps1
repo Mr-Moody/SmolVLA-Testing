@@ -14,7 +14,7 @@ $config = @{}
 Get-Content "$SCRIPT_DIR/00_run_params.sh" | ForEach-Object {
     if ($_ -match '^([A-Z_]+)=(.+)$') {
         $key = $matches[1]
-        $value = $matches[2] -replace "^[`\"']+|[`\"']+`$", ''
+        $value = $matches[2] -replace "^[`"']+|[`"']+$", ''
         $config[$key] = $value
     }
 }
@@ -25,6 +25,7 @@ $JUMP_HOST = $config["JUMP_HOST"]
 $SSH_KEY_FILE = $config["SSH_KEY_FILE"]
 $REMOTE_PROJECT_DIRNAME = $config["REMOTE_PROJECT_DIRNAME"]
 $REMOTE_SCRATCH_BASE = $config["REMOTE_SCRATCH_BASE"]
+$REMOTE_CLEANED_DATASET_ROOT = $config["REMOTE_CLEANED_DATASET_ROOT"]
 $LOCAL_CLEANED_DATA_SOURCE = if ($config["LOCAL_CLEANED_DATA_SOURCE"]) { $config["LOCAL_CLEANED_DATA_SOURCE"] } else { "$PROJECT_ROOT/cleaned_datasets" }
 $PREPROCESS_ON_GPU = $config["PREPROCESS_ON_GPU"]
 $LOCAL_DATA_PULL_SOURCE = if ($config["LOCAL_DATA_PULL_SOURCE"]) { $config["LOCAL_DATA_PULL_SOURCE"] } else { "$PROJECT_ROOT/lerobot_datasets" }
@@ -40,7 +41,7 @@ Write-Host "Remote target: $REMOTE_USER@$GPU_NODE (via $JUMP_HOST)"
 
 # Get remote home directory
 Write-Host "Detecting remote home directory..."
-$REMOTE_HOME_DIR = & ssh -i $SSH_KEY_FILE -o IdentitiesOnly=yes -o IdentityAgent=none -J "$REMOTE_USER@$JUMP_HOST" "$REMOTE_USER@$GPU_NODE" "printf %s `$HOME"
+$REMOTE_HOME_DIR = & ssh -i $SSH_KEY_FILE -o IdentitiesOnly=yes -o IdentityAgent=none -J "$REMOTE_USER@$JUMP_HOST" "$REMOTE_USER@$GPU_NODE" "printf %s \`$HOME"
 
 if (-not $REMOTE_HOME_DIR) {
     Write-Error "Failed to detect remote home directory"
@@ -55,13 +56,18 @@ Write-Host "Remote project: $REMOTE_HOME_PROJECT"
 
 # Create directories on remote
 Write-Host "Creating remote directories..."
-& ssh -i $SSH_KEY_FILE -o IdentitiesOnly=yes -o IdentityAgent=none -J "$REMOTE_USER@$JUMP_HOST" "$REMOTE_USER@$GPU_NODE" `
-    "mkdir -p '$REMOTE_CODE_DIR' '$REMOTE_SCRATCH_BASE/lerobot_datasets' '$($config["REMOTE_CLEANED_DATASET_ROOT"])'"
+$CREATE_DIRS_CMD = "mkdir -p '$REMOTE_CODE_DIR' '$REMOTE_SCRATCH_BASE/lerobot_datasets' '$REMOTE_CLEANED_DATASET_ROOT'"
+& ssh -i $SSH_KEY_FILE -o IdentitiesOnly=yes -o IdentityAgent=none -J "$REMOTE_USER@$JUMP_HOST" "$REMOTE_USER@$GPU_NODE" $CREATE_DIRS_CMD
+
+if ($LASTEXITCODE -ne 0) {
+    Write-Error "Failed to create remote directories"
+    exit 1
+}
 
 # Sync code
 Write-Host "Syncing code to remote..."
 & rsync -avz --progress `
-    -e "ssh -i $SSH_KEY_FILE -o IdentitiesOnly=yes -o IdentityAgent=none -J $REMOTE_USER@$JUMP_HOST" `
+    -e "ssh -i $SSH_KEY_FILE -o IdentitiesOnly=yes -o IdentityAgent=none -J `"$REMOTE_USER@$JUMP_HOST`"" `
     --exclude '.git' `
     --exclude 'checkpoints' `
     --exclude 'lerobot_datasets' `
@@ -73,15 +79,25 @@ Write-Host "Syncing code to remote..."
     "$PROJECT_ROOT/" `
     "$REMOTE_USER@$GPU_NODE`:$REMOTE_CODE_DIR/"
 
+if ($LASTEXITCODE -ne 0) {
+    Write-Error "Failed to sync code to remote"
+    exit 1
+}
+
 # Sync datasets
 if ($PREPROCESS_ON_GPU -eq "true") {
     Write-Host "GPU preprocessing enabled: syncing cleaned datasets..."
     foreach ($ds in $DATASET_NAMES) {
         Write-Host "  Syncing cleaned dataset: $ds"
         & rsync -avzP `
-            -e "ssh -i $SSH_KEY_FILE -o IdentitiesOnly=yes -o IdentityAgent=none -J $REMOTE_USER@$JUMP_HOST" `
+            -e "ssh -i $SSH_KEY_FILE -o IdentitiesOnly=yes -o IdentityAgent=none -J `"$REMOTE_USER@$JUMP_HOST`"" `
             "$LOCAL_CLEANED_DATA_SOURCE/$ds/" `
-            "$REMOTE_USER@$GPU_NODE`:$($config["REMOTE_CLEANED_DATASET_ROOT"])/$ds/"
+            "$REMOTE_USER@$GPU_NODE`:$REMOTE_CLEANED_DATASET_ROOT/$ds/"
+        
+        if ($LASTEXITCODE -ne 0) {
+            Write-Error "Failed to sync cleaned dataset: $ds"
+            exit 1
+        }
     }
 }
 else {
@@ -89,9 +105,14 @@ else {
     foreach ($ds in $DATASET_NAMES) {
         Write-Host "  Syncing dataset: $ds"
         & rsync -avzP `
-            -e "ssh -i $SSH_KEY_FILE -o IdentitiesOnly=yes -o IdentityAgent=none -J $REMOTE_USER@$JUMP_HOST" `
+            -e "ssh -i $SSH_KEY_FILE -o IdentitiesOnly=yes -o IdentityAgent=none -J `"$REMOTE_USER@$JUMP_HOST`"" `
             "$LOCAL_DATA_PULL_SOURCE/$ds/" `
             "$REMOTE_USER@$GPU_NODE`:$REMOTE_SCRATCH_BASE/lerobot_datasets/$ds/"
+        
+        if ($LASTEXITCODE -ne 0) {
+            Write-Error "Failed to sync dataset: $ds"
+            exit 1
+        }
     }
 }
 
@@ -101,11 +122,15 @@ Write-Host "✓ Sync complete."
 Write-Host ""
 Write-Host "Installing Qwen dependencies on remote server..."
 
-$install_script = @'
+$install_script = @"
 set -e
 echo "Activating lerobot environment..."
 if [[ -f ~/lerobot/.venv/bin/activate ]]; then
     source ~/lerobot/.venv/bin/activate
+elif [[ -f ~/miniconda3/envs/lerobot/bin/activate ]]; then
+    source ~/miniconda3/envs/lerobot/bin/activate
+else
+    echo "Warning: Could not find lerobot virtual environment, proceeding anyway..."
 fi
 
 echo "Installing vllm and qwen-vl-utils..."
@@ -113,13 +138,10 @@ pip install --upgrade pip
 pip install vllm>=0.7 qwen-vl-utils
 
 echo "Verifying installation..."
-python3 -c "from vllm import LLM; from qwen_vl_utils import *; print('✓ Qwen dependencies installed successfully')"
-'@
+python3 -c "from vllm import LLM; from qwen_vl_utils import *; print('OK - Qwen dependencies installed successfully')"
+"@
 
-& ssh -i $SSH_KEY_FILE -o IdentitiesOnly=yes -o IdentityAgent=none -J "$REMOTE_USER@$JUMP_HOST" "$REMOTE_USER@$GPU_NODE" bash @'EOF
-' + $install_script + '
-EOF
-'@
+& ssh -i $SSH_KEY_FILE -o IdentitiesOnly=yes -o IdentityAgent=none -J "$REMOTE_USER@$JUMP_HOST" "$REMOTE_USER@$GPU_NODE" bash -c $install_script
 
 if ($LASTEXITCODE -eq 0) {
     Write-Host "✓ Remote environment ready for Qwen annotation" -ForegroundColor Green
