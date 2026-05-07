@@ -61,6 +61,7 @@ _TRANSCODE_LOCKS_GUARD = threading.Lock()
 _VIDEO_STATUS: dict[tuple[str, str], dict[str, Any]] = {}
 _VIDEO_STATUS_GUARD = threading.Lock()
 _FFMPEG_TIME_RE = re.compile(r"time=(\d+):(\d+):(\d+(?:\.\d+)?)")
+_TRANSCODE_SETTINGS_VERSION = "h264_seek_gop15_v1"
 _EPISODE_MARKER_EVENTS = {
   "episode_start",
   "episode_end",
@@ -128,12 +129,25 @@ def _probe_duration_seconds(path: Path) -> float | None:
   return value if value > 0 else None
 
 
+def _transcode_meta_path(web_path: Path) -> Path:
+  return web_path.with_suffix(web_path.suffix + ".json")
+
+
 def _needs_transcode(source_path: Path, web_path: Path) -> bool:
   if not source_path.exists():
     return False
   if not web_path.exists():
     return True
   if web_path.stat().st_size == 0:
+    return True
+  meta_path = _transcode_meta_path(web_path)
+  if not meta_path.exists():
+    return True
+  try:
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+  except (OSError, json.JSONDecodeError):
+    return True
+  if meta.get("settings_version") != _TRANSCODE_SETTINGS_VERSION:
     return True
   return web_path.stat().st_mtime < source_path.stat().st_mtime
 
@@ -169,6 +183,12 @@ def _transcode_for_web(
     "20",
     "-pix_fmt",
     "yuv420p",
+    "-g",
+    "15",
+    "-keyint_min",
+    "15",
+    "-sc_threshold",
+    "0",
     "-movflags",
     "+faststart",
     "-an",
@@ -232,6 +252,9 @@ def _transcode_for_web(
     return False, stderr_text or "ffmpeg conversion failed"
 
   temp_path.replace(output_path)
+  _transcode_meta_path(output_path).write_text(json.dumps({
+    "settings_version": _TRANSCODE_SETTINGS_VERSION,
+  }) + "\n", encoding="utf-8")
   if progress_cb is not None:
     progress_cb(100.0, "Conversion complete")
   app.logger.info("Created browser video: %s", output_path)
@@ -680,7 +703,9 @@ def serve_video(dataset: str, camera: str):
         return Response("not found", status=404)
 
     # Let Werkzeug handle RFC-compliant Range and conditional requests.
-    return send_file(video_path.resolve(), mimetype="video/mp4", conditional=True)
+    response = send_file(video_path.resolve(), mimetype="video/mp4", conditional=True, max_age=3600)
+    response.cache_control.public = True
+    return response
 
 
 # ---------------------------------------------------------------------------

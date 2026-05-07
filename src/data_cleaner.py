@@ -13,7 +13,7 @@ Expected input layout (raw_datasets/<dataset_name>/):
 Output layout (cleaned_datasets/<dataset_name>/):
     session_metadata.json        (copied)
     robot.jsonl                  (filtered to motion + camera coverage only)
-    episode_events.jsonl         (regenerated episode_start events)
+    episode_events.jsonl         (regenerated episode_start and episode_end events)
     text.jsonl / language.jsonl  (copied if present)
     cameras/                     (symlinked from raw source — frames are unchanged)
 
@@ -46,6 +46,7 @@ from dataset_utils import (
 
 DEFAULT_DATASETS_ROOT = Path("raw_datasets")
 DEFAULT_OUTPUT_ROOT = Path("cleaned_datasets")
+DEFAULT_MIN_EPISODE_DURATION_S = 2.0
 DEFAULT_JOINT_MOTION_THRESHOLD = 5e-4
 DEFAULT_GRIPPER_MOTION_THRESHOLD = 2e-4
 DEFAULT_ACTION_TRANSLATION_THRESHOLD = 5e-6
@@ -67,6 +68,7 @@ class DatasetCleaner:
         gripper_motion_threshold: float = DEFAULT_GRIPPER_MOTION_THRESHOLD,
         action_translation_threshold: float = DEFAULT_ACTION_TRANSLATION_THRESHOLD,
         action_rotation_threshold: float = DEFAULT_ACTION_ROTATION_THRESHOLD,
+        min_episode_duration_s: float = DEFAULT_MIN_EPISODE_DURATION_S,
         generate_tasks: bool = False,
     ) -> None:
         self.dataset_dir = dataset_dir
@@ -78,6 +80,7 @@ class DatasetCleaner:
         self.gripper_motion_threshold = float(gripper_motion_threshold)
         self.action_translation_threshold = float(action_translation_threshold)
         self.action_rotation_threshold = float(action_rotation_threshold)
+        self.min_episode_duration_s = float(min_episode_duration_s)
         self.generate_tasks = generate_tasks
 
         self._device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -219,7 +222,7 @@ class DatasetCleaner:
 
         kept_rows: list[dict[str, Any]] = []
         episode_events: list[dict[str, Any]] = []
-        skipped_static = skipped_no_coverage = 0
+        skipped_static = skipped_no_coverage = skipped_too_short = 0
 
         for raw_index, (start_idx, end_idx) in enumerate(boundaries):
             robot_slice = self.robot_rows[start_idx:end_idx]
@@ -249,17 +252,30 @@ class DatasetCleaner:
                 )
 
             first_ts = infer_timestamp_ns(covered[0])
+            last_ts = infer_timestamp_ns(covered[-1])
+            duration_s = (last_ts - first_ts) / 1_000_000_000.0
+            if duration_s < self.min_episode_duration_s:
+                skipped_too_short += 1
+                LOGGER.info(
+                    "Skipping segment %d: duration %.2fs is below minimum %.2fs.",
+                    raw_index, duration_s, self.min_episode_duration_s,
+                )
+                continue
+
             episode_events.append({"event": "episode_start", "robot_timestamp_ns": first_ts})
             kept_rows.extend(covered)
+            episode_events.append({"event": "episode_end", "robot_timestamp_ns": last_ts})
 
             LOGGER.info(
                 "Kept segment %d → output episode %d (%d steps).",
                 raw_index, len(episode_events) - 1, len(covered),
             )
 
+        n_kept = len(episode_events) // 2
         LOGGER.info(
-            "Cleaning complete: %d episode(s) kept, %d skipped (static), %d skipped (no camera coverage).",
-            len(episode_events), skipped_static, skipped_no_coverage,
+            "Cleaning complete: %d episode(s) kept, %d skipped (static), %d skipped (no camera coverage),"
+            " %d skipped (too short, < %.2fs).",
+            n_kept, skipped_static, skipped_no_coverage, skipped_too_short, self.min_episode_duration_s,
         )
 
         write_jsonl(self.output_dir / "robot.jsonl", kept_rows)
@@ -325,6 +341,10 @@ def parse_args() -> argparse.Namespace:
         help="Min cartesian_delta_rotation norm considered movement.",
     )
     parser.add_argument(
+        "--min-episode-duration", type=float, default=DEFAULT_MIN_EPISODE_DURATION_S,
+        help="Minimum episode duration in seconds after trimming; shorter episodes are dropped (default: %(default)ss).",
+    )
+    parser.add_argument(
         "--generate-tasks", action="store_true",
         help="Auto-assign a unique global task prompt to each kept episode and write annotations.jsonl.",
     )
@@ -347,6 +367,7 @@ def main() -> None:
         gripper_motion_threshold=args.gripper_motion_threshold,
         action_translation_threshold=args.action_translation_threshold,
         action_rotation_threshold=args.action_rotation_threshold,
+        min_episode_duration_s=args.min_episode_duration,
         generate_tasks=args.generate_tasks,
     )
     cleaner.clean()
