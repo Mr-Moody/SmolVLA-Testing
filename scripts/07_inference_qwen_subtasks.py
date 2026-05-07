@@ -286,29 +286,35 @@ def create_subtask_prompt(subtasks: list[str], history: list[str] | None = None)
 
     return (
 f"""You are labeling robot manipulation subtasks from synchronized camera frames.
+The task involves inserting an MSD (Micro-D Subminiature) plug into its corresponding socket connector.
+The MSD plug has a specific keyed orientation that must be respected, and precise microadjustments are required at the insertion point to seat it properly.
 A frame may contain ONE or MULTIPLE simultaneous subtasks. It is common for frames to have 2 or more labels.
 Output all active subtasks occurring in the current frame.
 
 Subtask definitions:
-- approach_MSD_plug: Gripper moving toward the MSD plug before making contact. The arm trajectory is directed at the plug location.
-- positioning_the_gripper: Gripper is in contact with or very close to the plug, adjusting finger/hand orientation and position to achieve proper grasp alignment. Fine adjustments of grip points.
-- grasp_the_plug: Gripper fingers actively closing around the plug body to secure it with firm contact. This is the grasping action itself.
-- move_the_plug_to_the_socket: Plug is firmly held by the gripper, and the arm is moving the entire gripper+plug assembly toward the socket location. Large arm movements transporting the plug through space.
-- place_the_plug_in_the_socket: The plug is being inserted into the socket opening. This includes initial contact with the socket and partial insertion as the plug enters the socket cavity.
-- nudging_the_plug_into_the_socket: Small fine adjustments and rotations while the plug is partially or mostly inserted into the socket. Correcting alignment during insertion without large arm movements.
-- align_handle: The plug handle is being rotated or adjusted to achieve proper orientation and ensure flush seating with the socket connector.
-- push_down_on_the_plug: Applying downward or inward force on the plug to fully seat it into the socket. Final pressing action to complete the insertion.
+- approach_MSD_plug: Gripper moving toward the MSD plug WITHOUT yet holding it. The arm is in motion to reach the plug for grasping. Only active when the plug is not yet in the gripper's possession.
+- positioning_the_gripper: Micro-adjustments of gripper finger position and orientation to align properly around the plug. Small precise movements to achieve optimal grasp points before closing fingers.
+- grasp_the_plug: Gripper fingers actively closing and squeezing around the plug to secure it. The grasping action is in progress (not before, not after). Label while fingers are applying force to hold the plug.
+- move_the_plug_to_the_socket: Arm is in motion transporting the held plug toward the socket location. Large arm movements carrying the already-grasped plug through space to approach the socket. Only active while the arm is actively moving the plug toward the socket.
+- place_the_plug_in_the_socket: The plug is being inserted into the socket opening with correct orientation. Includes initial contact with the socket and partial insertion as the plug enters the socket cavity while maintaining the keyed alignment.
+- nudging_the_plug_into_the_socket: Near the end of insertion when the plug is already mostly in the socket, making small fine microadjustments at the insertion point to fully seat it properly and maintain correct orientation. Only active when the plug is deep in the socket requiring final alignment and precision adjustments.
+- align_handle: The plug handle is being rotated or tilted upward at the end to raise it into position. This occurs after the plug is mostly seated and before the final locking push. Handle is being brought UP so the plug can be pushed down to lock.
+- push_down_on_the_plug: Applying downward force on the plug at the end to lock it in place into the socket. Final pressing action that secures and locks the plug fully.
 
 Important: Multiple subtasks often occur together in a single frame.
 Examples of valid multi-label frames:
-  - "positioning_the_gripper,grasp_the_plug" (adjusting position while fingers close)
-  - "move_the_plug_to_the_socket,place_the_plug_in_the_socket" (approaching socket and beginning insertion)
-  - "place_the_plug_in_the_socket,nudging_the_plug_into_the_socket" (insertion and fine adjustment happening simultaneously)
+  - "positioning_the_gripper,grasp_the_plug" (micro-aligning while fingers close)
+  - "move_the_plug_to_the_socket,place_the_plug_in_the_socket" (arm moving plug while beginning insertion)
+  - "place_the_plug_in_the_socket,nudging_the_plug_into_the_socket" (insertion and microadjustments at insertion point together)
+  - "nudging_the_plug_into_the_socket,align_handle" (final micro-adjustments and handle rotation together)
+  - "align_handle,push_down_on_the_plug" (handle being raised while beginning to push down)
 
 Subtask options: {subtask_list}{history_text}
 
-Reply with a comma-separated list of ALL active subtasks (e.g., "move_the_plug_to_the_socket,align_handle").
-Output all labels that apply to this frame. Do not overthink—if multiple actions are happening, list them all.""")
+Reply with a comma-separated list of ALL active subtasks (e.g., "move_the_plug_to_the_socket,place_the_plug_in_the_socket").
+Output all labels that apply to this frame. Do not overthink—if multiple actions are happening, list them all."""
+
+)
 
 
 def label_frame_with_context(
