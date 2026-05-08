@@ -279,42 +279,107 @@ def sample_episode_frame_indices(
 
 
 def create_subtask_prompt(subtasks: list[str], args, history: list[str] | None = None) -> str:
-    subtask_list = ", ".join(subtasks)
-    history_text = ""
     n = 3
     if history:
-        history_text = f"\nPrevious {n} labels: {' -> '.join(history[-n:])}"
+        recent = history[-n:]
+        history_text = (
+            f"Sequence so far (most recent last): {' → '.join(recent)}\n"
+            f"Label the center frame as the current phase, the next phase, OR an earlier phase "
+            f"if the plug has been dropped and the robot is recovering."
+        )
+    else:
+        history_text = "Sequence so far: [episode start] — first label should be approach_MSD_plug."
 
-    return (
-f"""You are labeling robot manipulation subtasks from synchronized camera frames.
-The task involves inserting an MSD (Micro-D Subminiature) plug into its corresponding socket connector, placed on a blue block.
-The MSD plug has a specific keyed orientation that must be respected, and precise microadjustments are required at the insertion point to seat it properly.
-A frame may contain ONE or MULTIPLE simultaneous subtasks. It is common for frames to have 2 or more labels.
-You are also provided {args.context_window} frames EITHER SIDE of the current frame as additional context. These should be used to judge motion.
-Output all active subtasks occurring in the current frame.
+    context_note = (
+        f"You are given {2 * args.context_window + 1} sequential frames. "
+        f"The CENTER frame is the one to label. Use surrounding frames only to judge motion direction."
+    ) if args.context_window > 0 else (
+        "You are given a single frame to label."
+    )
 
+    return f"""\
+You are labeling robot arm subtasks for MSD plug insertion.
+TASK: Insert a Micro-D Subminiature (MSD) plug into a socket on a blue block. The plug has a rectangular connector body and a thumb-screw handle.
+KEY TERMS — PLUG = object held by gripper. SOCKET = fixed receptor on the blue block. These are different objects.
+
+{context_note}
 {history_text}
 
-Important distinction: The PLUG is the object being held by the gripper. The SOCKET is the fixed connector on the BLUE base receiving the plug. These are separate objects.
+CANONICAL SEQUENCE (normal progression — can restart from any earlier step if plug is dropped):
+  1. approach_MSD_plug
+  2. positioning_the_gripper
+  3. grasp_the_plug
+  4. move_the_plug_to_the_socket
+  5. place_the_plug_in_the_socket
+  6. nudging_the_plug_into_the_socket  [uncommon]
+  7. align_handle                       [rare]
+  8. push_down_on_the_plug
 
-Subtask definitions:
-- approach_MSD_plug: Green gripper moving toward the MSD plug on the table WITHOUT yet holding it. The arm is in motion to reach the plug for grasping. Only active when the gripper does NOT currently possess the plug and the plug is NOT in the socket above the blue block. CANNOT occur with positioning_the_gripper. Do NOT use this label if the gripper is already holding the plug.
-- positioning_the_gripper: Micro-adjustments of gripper position and orientation, to align properly around the plug. This happens with the gripper OPEN, its ends level with the plug handle, and the plug on the table. This can only occur when the gripper is directly above the plug on the table or level with the plug on the table. Small precise movements to achieve optimal grasp points before closing fingers. CANNOT occur with approach_MSD_plug. CAN occur alongside grasp_the_plug if the fingers are moving toward each other.
-- grasp_the_plug: Gripper fingers actively moving to close around the plug and secure it. Use the historical frames in the context window to help judge this motion. This state ENDS when the gripper fingers are stationary around the plug OR when re-opening due to a failure.  
-- move_the_plug_to_the_socket: Arm is in motion transporting the held plug (already grasped) toward the socket location. Large arm movements carrying the plug through space to approach the SOCKET. Only active while the arm is actively moving the plug toward the SOCKET. The gripper must be holding the plug during this action. Once the plug is close to the socket - at least part of it directly above part of the socket- this state ENDS.
-- place_the_plug_in_the_socket: The plug is CLOSE TO the socket, being inserted with approximate orientation. Includes initial contact with the socket and partial insertion as the plug enters the socket cavity while maintaining the keyed alignment. Should happen after move_the_plug_to_the_socket. MUST BE LABELED ALONE. 
-- nudging_the_plug_into_the_socket: The plug is already in the socket and the gripper is pushing on the sides of the plug with the fingers closed to nudge it further into the hole. Small side-to-side or lateral pressure adjustments to seat the plug deeper into the socket cavity. MUST BE LABELED ALONE. UNCOMMON STATE
-- align_handle: The plug handle is not upright and the gripper is pushing it back up into the raised position. This occurs after the plug is mostly seated and before the final locking push. MUST BE LABELED ALONE.
-- push_down_on_the_plug: Applying downward force on the top face of the plug AFTER releasing it at the end. This is to lock it in place into the socket. This ALWAYS occurs at the end of the motion sequence. MUST BE LABELED ALONE
+RECOVERY (plug dropped — look for plug on table, gripper empty or re-opening):
+  If plug is visible on the table and gripper is empty → label as approach_MSD_plug (restart)
+  If gripper is repositioning above a dropped plug → label as positioning_the_gripper
+  Any step after grasp_the_plug can restart to approach_MSD_plug if plug is lost
 
-Examples of single-label frames (do not combine these):
-  - "place_the_plug_in_the_socket" (only this action)
-  - "nudging_the_plug_into_the_socket" (only this action)
-  - "align_handle" (only this action)
-  - "push_down_on_the_plug" (only this action)
+SUBTASK DEFINITIONS:
 
-Only output multiple labels if you truly observe multiple simultaneous actions. If only one action is clearly occurring, output that label alone. Do not overthink - be honest about what you observe. If you are unsure, go with the single most likely label"""
-)
+approach_MSD_plug
+  START: arm begins moving from rest toward the plug lying on the table
+  END:   gripper fingertips reach the height of the plug handle OR settle directly above it
+  VISUAL: broad fast arm motion; gripper open; plug unconstrained on table; gripper far from plug
+  ≠ positioning_the_gripper: approach is fast/coarse; positioning is slow/fine at plug level
+
+positioning_the_gripper
+  START: gripper slows to make fine adjustments around the plug
+  END:   fingers begin to close
+  VISUAL: gripper open; fingertips at same height as plug handle; plug visible between open jaws; slow precise movements
+  ≠ approach_MSD_plug: if arm is still in fast broad motion, use approach instead
+
+grasp_the_plug
+  START: fingers begin visibly narrowing toward the plug
+  END:   fingers fully closed and stationary around plug
+  VISUAL: finger gap shrinking; plug handle starting to be squeezed
+  DURATION: typically under 1 second
+
+move_the_plug_to_the_socket
+  START: plug is firmly held, arm begins transporting it toward socket
+  END:   any part of plug is directly above any part of the socket on the blue block
+  VISUAL: arm in broad motion; plug in closed gripper; socket visible at a distance; clear transit motion
+  ≠ place_the_plug_in_the_socket: once plug tip is above/adjacent to socket, use place instead
+
+place_the_plug_in_the_socket
+  START: plug tip is directly above or touching the socket entry
+  END:   plug body is fully or mostly inside socket cavity
+  VISUAL: plug tip entering socket hole; slow careful downward motion; plug and socket in close proximity
+
+nudging_the_plug_into_the_socket  [UNCOMMON — most insertions skip this]
+  START: plug is partially in socket but not fully seated
+  END:   plug fully seated (no gap between connector and socket face)
+  VISUAL: gripper fingers closed around plug that is already in socket; small lateral or pressing adjustments
+
+align_handle  [RARE]
+  START: plug handle is visibly tilted off-vertical after partial insertion
+  END:   handle restored to upright position
+  VISUAL: thumb-screw handle clearly leaning; gripper pushing handle upright
+
+push_down_on_the_plug  [ALWAYS LAST]
+  START: gripper OPENS and presses down on top face of already-inserted plug
+  END:   arm begins to retract away
+  VISUAL: gripper open; finger pads pressing on top surface of plug body; plug already seated in socket
+  ≠ place_the_plug_in_the_socket: here the gripper is OPEN pressing from above, not inserting
+
+VALID CO-OCCURRENCES (the only pairs that can be active simultaneously):
+  positioning_the_gripper + grasp_the_plug      (fingers closing while still adjusting)
+  move_the_plug_to_the_socket + place_the_plug_in_the_socket  (plug arriving at socket)
+  nudging_the_plug_into_the_socket + align_handle              (simultaneous seating corrections)
+All other combinations are INVALID. Do not output more than 2 labels at once.
+
+TEMPORAL STABILITY: A subtask typically lasts several seconds. If you labeled the previous frame as X and nothing has clearly changed, output X again. Only switch when you see an unambiguous visual change.
+
+OUTPUT FORMAT: Output one or two subtask names separated by a comma. No explanation. No punctuation other than the comma separator. No extra words.
+Examples of valid output:
+  approach_MSD_plug
+  positioning_the_gripper, grasp_the_plug
+  nudging_the_plug_into_the_socket"""
 
 
 def label_frame_with_context(
@@ -539,7 +604,7 @@ def main() -> None:
         sys.exit(1)
 
     tokenizer = llm.get_tokenizer()
-    sampling_params = SamplingParams(max_tokens=16, temperature=0.0, repetition_penalty=1.05)
+    sampling_params = SamplingParams(max_tokens=24, temperature=0.0, repetition_penalty=1.05)
 
     results: list[dict[str, Any]] = []
 
