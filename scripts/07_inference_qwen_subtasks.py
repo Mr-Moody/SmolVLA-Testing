@@ -19,7 +19,9 @@ be reused for different tasks later.
 from __future__ import annotations
 
 import argparse
+import bisect
 import json
+import math
 import sys
 from collections import defaultdict, deque
 from pathlib import Path
@@ -241,6 +243,80 @@ def load_frame_metadata(dataset_dir: Path, primary_camera: str) -> list[dict[str
     return load_jsonl(frames_path)
 
 
+def load_robot_data(dataset_dir: Path) -> tuple[list[dict[str, Any]], list[int]]:
+    """Load robot.jsonl and return (records, sorted_timestamps_ns) for bisect lookup."""
+    robot_path = dataset_dir / "robot.jsonl"
+    if not robot_path.exists():
+        return [], []
+    records = load_jsonl(robot_path)
+    records.sort(key=lambda r: r["timestamp_ns"])
+    ts = [r["timestamp_ns"] for r in records]
+    return records, ts
+
+
+def get_robot_record_at_ns(
+    robot_data: list[dict[str, Any]],
+    robot_ts: list[int],
+    query_ns: int,
+    max_gap_ms: float = 200.0,
+) -> dict[str, Any] | None:
+    if not robot_data:
+        return None
+    idx = bisect.bisect_left(robot_ts, query_ns)
+    candidates = [c for c in (idx, idx - 1) if 0 <= c < len(robot_ts)]
+    if not candidates:
+        return None
+    best = min(candidates, key=lambda i: abs(robot_ts[i] - query_ns))
+    if abs(robot_ts[best] - query_ns) > max_gap_ms * 1e6:
+        return None
+    return robot_data[best]
+
+
+def format_robot_states_for_prompt(
+    records: list[dict[str, Any] | None],
+    center_idx: int,
+) -> str:
+    lines = ["ROBOT STATE (aligned to camera frames, center = NOW):"]
+    for i, rec in enumerate(records):
+        offset = i - center_idx
+        marker = " ← NOW (label this)" if offset == 0 else ""
+        if rec is None:
+            lines.append(f"  [{offset:+d}] no data{marker}")
+            continue
+        rs = rec["robot_state"]
+        ea = rec["executed_action"]
+        gs = rs["gripper_state"]
+        gw = rs["gripper_width"] * 1000
+        gc = ea["gripper_command"]
+        d = ea["cartesian_delta_translation"]
+        mag = math.sqrt(sum(x**2 for x in d)) * 1000
+        dz = d[2] * 1000
+        tcp_z = rs["tcp_position_xyz"][2] * 1000
+        if gc == 1.0 and gs == "OPEN":
+            cmd_str = "cmd=CLOSE"
+        elif gc == 1.0 and gs == "CLOSE":
+            cmd_str = "cmd=CLOSE"
+        else:
+            cmd_str = "cmd=open"
+        dz_str = f"{dz:+.1f}"
+        lines.append(
+            f"  [{offset:+d}] gripper={gs}({gw:.1f}mm) {cmd_str}  "
+            f"speed={mag:.1f}mm  dz={dz_str}mm  tcp_z={tcp_z:.0f}mm{marker}"
+        )
+    lines += [
+        "",
+        "GRIPPER HINTS:",
+        "  gripper=OPEN + cmd=CLOSE + width falling   → grasp_the_plug (fingers actively closing)",
+        "  gripper=CLOSE + width<20mm                 → plug in hand",
+        "  gripper=CLOSE + speed>8mm                  → arm transporting plug",
+        "  gripper=CLOSE + speed<4mm + dz<0           → inserting or nudging",
+        "  gripper=OPEN + speed<3mm                   → positioning_the_gripper or released",
+        "  gripper=OPEN + speed>8mm                   → approach_MSD_plug or recovering",
+        "  gripper=OPEN + cmd=open + plug in socket   → push_down_on_the_plug",
+    ]
+    return "\n".join(lines)
+
+
 def sample_episode_frame_indices(
     frame_metadata: list[dict[str, Any]],
     start_ns: int,
@@ -278,7 +354,12 @@ def sample_episode_frame_indices(
     return sampled_indices, sampled_timestamps_s
 
 
-def create_subtask_prompt(subtasks: list[str], args, history: list[str] | None = None) -> str:
+def create_subtask_prompt(
+    subtasks: list[str],
+    args,
+    history: list[str] | None = None,
+    robot_context: str | None = None,
+) -> str:
     n = 3
     if history:
         recent = history[-n:]
@@ -297,6 +378,8 @@ def create_subtask_prompt(subtasks: list[str], args, history: list[str] | None =
         "You are given a single frame to label."
     )
 
+    robot_section = f"\n{robot_context}\n" if robot_context else ""
+
     return f"""\
 You are labeling robot arm subtasks for MSD plug insertion.
 TASK: Insert a Micro-D Subminiature (MSD) plug into a socket on a blue block. The plug has a rectangular connector body and a thumb-screw handle.
@@ -304,7 +387,7 @@ KEY TERMS — PLUG = object held by gripper. SOCKET = fixed receptor on the blue
 
 {context_note}
 {history_text}
-
+{robot_section}
 CANONICAL SEQUENCE (normal progression — can restart from any earlier step if plug is dropped):
   1. approach_MSD_plug
   2. positioning_the_gripper
@@ -390,6 +473,7 @@ def label_frame_with_context(
     subtasks: list[str],
     args,
     history: list[str] | None = None,
+    robot_context: str | None = None,
 ) -> list[str]:
     try:
         from qwen_vl_utils import process_vision_info
@@ -397,7 +481,7 @@ def label_frame_with_context(
         print("WARNING: qwen_vl_utils not available")
         return [subtasks[-1]] if subtasks else ["idle"]
 
-    prompt = create_subtask_prompt(subtasks, args, history)
+    prompt = create_subtask_prompt(subtasks, args, history, robot_context)
     content: list[dict[str, str]] = []
     for frame_path in frames:
         if frame_path and Path(frame_path).exists():
@@ -577,6 +661,12 @@ def main() -> None:
         print(f"ERROR: {exc}")
         sys.exit(1)
 
+    robot_data, robot_ts = load_robot_data(dataset_root)
+    if robot_data:
+        print(f"Loaded {len(robot_data)} robot records for proprioceptive context.")
+    else:
+        print("WARNING: No robot.jsonl found — labeling without proprioceptive context.")
+
     frame_count = min(get_video_frame_count(video_source) for video_source in video_sources)
     if frame_count <= 0:
         print("ERROR: Could not determine video frame count")
@@ -639,6 +729,17 @@ def main() -> None:
             context_start = max(0, sample_pos - args.context_window)
             context_end = min(len(sampled_indices), sample_pos + args.context_window + 1)
             context_positions = list(range(context_start, context_end))
+            center_idx_in_context = sample_pos - context_start
+
+            # Gather proprioceptive data for each context frame.
+            robot_records: list[dict[str, Any] | None] = []
+            for context_pos in context_positions:
+                ts_ns = int(sampled_timestamps_s[context_pos] * 1e9)
+                robot_records.append(get_robot_record_at_ns(robot_data, robot_ts, ts_ns))
+            robot_context = (
+                format_robot_states_for_prompt(robot_records, center_idx_in_context)
+                if robot_data else None
+            )
 
             temp_files: list[str] = []
             try:
@@ -664,6 +765,7 @@ def main() -> None:
                         subtasks,
                         args,
                         list(history),
+                        robot_context,
                     )
 
                 frame_labels.append(label_set)
