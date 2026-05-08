@@ -111,7 +111,7 @@ def find_video_sources(video_path: str | None = None, data_name: str = "double_d
             return sorted(Path(p) for p in glob.glob(str(path / "**" / "rgb.mp4"), recursive=True))
         return [path]
 
-    data_dir = Path(f"/scratch0/hkendall/cleaned_datasets/{data_name}/cameras")
+    data_dir = Path(f"/scratch0/xparker/cleaned_datasets/{data_name}/cameras")
     if not data_dir.exists():
         return []
 
@@ -133,7 +133,7 @@ def get_dataset_root(video_sources: list[Path], data_name: str) -> Path:
         for parent in [video_source.parent, *video_source.parents]:
             if (parent / "episode_events.jsonl").exists():
                 return parent
-    return Path(f"/scratch0/hkendall/cleaned_datasets/{data_name}")
+    return Path(f"/scratch0/xparker/cleaned_datasets/{data_name}")
 
 
 def get_video_frame_count(video_path: Path) -> int:
@@ -286,34 +286,57 @@ def create_subtask_prompt(subtasks: list[str], args, history: list[str] | None =
         history_text = f"\nPrevious {n} labels: {' -> '.join(history[-n:])}"
 
     return (
-f"""You are labeling robot manipulation subtasks from synchronized camera frames.
-The task involves inserting an MSD (Micro-D Subminiature) plug into its corresponding socket connector, placed on a blue block.
-The MSD plug has a specific keyed orientation that must be respected, and precise microadjustments are required at the insertion point to seat it properly.
-A frame may contain ONE or MULTIPLE simultaneous subtasks. It is common for frames to have 2 or more labels.
-You are also provided {args.context_window} frames EITHER SIDE of the current frame as additional context. These should be used to judge motion.
-Output all active subtasks occurring in the current frame.
+f"""You are a PhD student labeling experimental data from your Franka Panda Emika 7DOF robotic arm with a custom green gripper.
+Your experiment involves training a Vision Language Action (VLA) model to autonomously perform MSD (Micro-D Subminiature) plug insertion tasks.
+You are meticulously labeling synchronized camera frames to create ground-truth subtask annotations for your training dataset.
+This is rigorous experimental work—label each frame with precision and consistency, as these annotations will directly impact your model's learning.
+You are analyzing video sequences of your robotic arm performing the MSD plug insertion task repeatedly, and you need to identify and label each distinct manipulation subtask.
 
+You are provided {args.context_window} frames EITHER SIDE of the current frame as additional context. Use these to carefully judge motion and state transitions in your experiment.
+Analyze the current frame and output all active subtasks occurring at this moment.
 {history_text}
 
-Important distinction: The PLUG is the object being held by the gripper. The SOCKET is the fixed connector on the BLUE base receiving the plug. These are separate objects.
+Critical experimental details:
+- The PLUG is the MSD connector object manipulated by your green gripper.
+- The SOCKET is the fixed MSD connector receptacle mounted on the BLUE base, which is the insertion target.
+- Your Franka Panda arm must perform a precise, repeatable manipulation sequence for your experiment to be valid.
+- These labels will be used to train your VLA model, so accuracy is essential.
 
-Subtask definitions:
-- approach_MSD_plug: Green gripper moving toward the MSD plug on the table WITHOUT yet holding it. The arm is in motion to reach the plug for grasping. Only active when the gripper does NOT currently possess the plug and the plug is NOT in the socket above the blue block. CANNOT occur with positioning_the_gripper. Do NOT use this label if the gripper is already holding the plug.
-- positioning_the_gripper: Micro-adjustments of gripper position and orientation, to align properly around the plug. This happens with the gripper OPEN, its ends level with the plug handle, and the plug on the table. This can only occur when the gripper is directly above the plug on the table or level with the plug on the table. Small precise movements to achieve optimal grasp points before closing fingers. CANNOT occur with approach_MSD_plug. CAN occur alongside grasp_the_plug if the fingers are moving toward each other.
-- grasp_the_plug: Gripper fingers actively moving to close around the plug and secure it. Use the historical frames in the context window to help judge this motion. This state ENDS when the gripper fingers are stationary around the plug OR when re-opening due to a failure.  
-- move_the_plug_to_the_socket: Arm is in motion transporting the held plug (already grasped) toward the socket location. Large arm movements carrying the plug through space to approach the SOCKET. Only active while the arm is actively moving the plug toward the SOCKET. The gripper must be holding the plug during this action. Once the plug is close to the socket - at least part of it directly above part of the socket- this state ENDS.
-- place_the_plug_in_the_socket: The plug is CLOSE TO the socket, being inserted with approximate orientation. Includes initial contact with the socket and partial insertion as the plug enters the socket cavity while maintaining the keyed alignment. Should happen after move_the_plug_to_the_socket. MUST BE LABELED ALONE. 
-- nudging_the_plug_into_the_socket: The plug is already in the socket and the gripper is pushing on the sides of the plug with the fingers closed to nudge it further into the hole. Small side-to-side or lateral pressure adjustments to seat the plug deeper into the socket cavity. MUST BE LABELED ALONE. UNCOMMON STATE
-- align_handle: The plug handle is not upright and the gripper is pushing it back up into the raised position. This occurs after the plug is mostly seated and before the final locking push. MUST BE LABELED ALONE.
-- push_down_on_the_plug: Applying downward force on the top face of the plug AFTER releasing it at the end. This is to lock it in place into the socket. This ALWAYS occurs at the end of the motion sequence. MUST BE LABELED ALONE
+Subtask definitions (experimental phases):
+- approach_MSD_plug: Your green gripper is moving toward the MSD plug on the table WITHOUT yet grasping or touching it. You observe large arm motions bringing the gripper closer to the plug location. Reference your context frames to see directional motion toward the plug. Only label when your gripper does NOT currently possess the plug and the plug is NOT seated in the socket above the blue base. CANNOT occur with positioning_the_gripper. Do NOT use this label if the gripper is already holding the plug or in contact with it.
+
+- positioning_the_gripper: Your gripper is in light contact with the plug, making small micro-adjustments of finger position and orientation to achieve proper alignment before grasping. You observe very fine movements around the plug surface. Reference your context frames to see small oscillating adjustments, not large directional motion. Only label during the light contact/alignment phase BEFORE fingers begin closing. CANNOT occur with approach_MSD_plug.
+
+- grasp_the_plug: Your gripper fingers are actively closing around the plug to secure it. Label only while the fingers are moving through the closing motion. Reference your context frames to see finger positions changing from open to closed. This is a SHORT BURST action—the state ENDS when your gripper fingers become stationary around the plug. Once the plug is firmly secured and fingers stop moving, stop labeling this phase. MUST BE LABELED ALONE.
+
+- move_the_plug_to_the_socket: Your Franka arm is in motion transporting the held plug (already grasped and secured by your green gripper) toward the socket location on the blue base. You observe large arm movements carrying the plug through space to approach the SOCKET. Reference your context frames to see the plug's position progressing toward the blue base. Only label while the arm is actively moving the plug toward the SOCKET. Your gripper must be holding the plug during this action.
+
+- place_the_plug_in_the_socket: Your plug is being inserted into the socket opening with correct keyed orientation. You observe initial contact with the socket and partial insertion as the plug enters the socket cavity while maintaining alignment. Reference your context frames to see the plug entering the socket cavity. MUST BE LABELED ALONE.
+
+- nudging_the_plug_into_the_socket: Your plug is already seated in the socket and your gripper is pushing on the sides of the plug with fingers closed to nudge it further into the insertion hole. You observe small side-to-side or lateral pressure adjustments to seat the plug deeper into the socket cavity. Reference your context frames to see the plug position changing with lateral movements. MUST BE LABELED ALONE. UNCOMMON STATE.
+
+- align_handle: The plug handle is not upright and your gripper is pushing it back up into the raised position. You observe this occurs after the plug is mostly seated and before the final locking push. Reference your context frames to see the handle rotating or tilting upward. MUST BE LABELED ALONE.
+
+- push_down_on_the_plug: Your gripper is applying downward force on the top face of the plug to lock it in place into the socket. ONLY use this label when BOTH conditions are experimentally true: (1) The plug is already seated in the socket on the blue base, AND (2) Downward force is being applied on top of the plug. Reference your context frames to see the plug already positioned in the socket and your gripper applying downward motion. This is the final pressing action that secures and locks the plug fully. MUST BE LABELED ALONE.
+
+Important experimental guidelines: Some subtasks must be labeled alone to maintain data quality.
+Examples of valid multi-label frames in your experiment:
+  - "move_the_plug_to_the_socket,place_the_plug_in_the_socket" (arm moving plug while beginning insertion into socket)
+  - "positioning_the_gripper,move_the_plug_to_the_socket" (adjusting grip position while moving toward socket)
 
 Examples of single-label frames (do not combine these):
-  - "place_the_plug_in_the_socket" (only this action)
-  - "nudging_the_plug_into_the_socket" (only this action)
-  - "align_handle" (only this action)
-  - "push_down_on_the_plug" (only this action)
+  - "approach_MSD_plug" (only this action, gripper moving toward plug on table)
+  - "positioning_the_gripper" (only this action, light contact adjustments)
+  - "grasp_the_plug" (only this action, short burst while fingers close)
+  - "place_the_plug_in_the_socket" (only this action, insertion into socket)
+  - "nudging_the_plug_into_the_socket" (only this action, lateral adjustments)
+  - "align_handle" (only this action, handle rotation upward)
+  - "push_down_on_the_plug" (only this action, downward force on seated plug)
 
-Only output multiple labels if you truly observe multiple simultaneous actions. If only one action is clearly occurring, output that label alone. Do not overthink - be honest about what you observe. If you are unsure, go with the single most likely label"""
+Experimental protocol: Label each frame with scientific precision. Use the context frames to carefully understand motion and state transitions—compare frame positions before and after to judge movement direction, magnitude, and type. Your labels are ground truth for your VLA training dataset. Be rigorous and consistent. If you are uncertain between labels, choose the single most likely label rather than guessing multiple. Your experimental dataset depends on accurate annotations.
+
+If multiple subtasks are active in the same frame, output all of them as a comma-separated list with no extra words or formatting, for example: move_the_plug_to_the_socket,place_the_plug_in_the_socket."""
+
 )
 
 
@@ -527,7 +550,7 @@ def main() -> None:
 
     try:
         llm = LLM(
-            model="Qwen/Qwen3-VL-8B-Instruct",
+            model="Qwen/Qwen3-VL-4B-Instruct",
             tensor_parallel_size=1,
             gpu_memory_utilization=args.gpu_mem_util,
             max_model_len=args.max_model_len,
