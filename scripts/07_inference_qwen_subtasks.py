@@ -21,7 +21,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from collections import deque
+from collections import defaultdict, deque
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -324,12 +324,12 @@ def label_frame_with_context(
     frames: list[str],
     subtasks: list[str],
     history: list[str] | None = None,
-) -> str:
+) -> list[str]:
     try:
         from qwen_vl_utils import process_vision_info
     except ImportError:
         print("WARNING: qwen_vl_utils not available")
-        return subtasks[-1] if subtasks else "idle"
+        return [subtasks[-1]] if subtasks else ["idle"]
 
     prompt = create_subtask_prompt(subtasks, history)
     content: list[dict[str, str]] = []
@@ -350,21 +350,38 @@ def label_frame_with_context(
     if outputs and outputs[0].outputs:
         result_text = outputs[0].outputs[0].text.strip().lower()
 
-    for subtask in subtasks:
-        if subtask.lower() in result_text:
-            return subtask
+    labels: list[str] = []
+
+    def add_label(label: str) -> None:
+        if label not in labels:
+            labels.append(label)
+
+    raw_candidates = [
+        piece.strip().strip('"\'')
+        for piece in result_text.replace("\n", ",").split(",")
+        if piece.strip()
+    ]
+
+    for candidate in raw_candidates:
+        normalized_candidate = candidate.strip(". :;!()[]{}").strip()
+        for subtask in subtasks:
+            if normalized_candidate == subtask.lower() or subtask.lower() in normalized_candidate:
+                add_label(subtask)
+
+    if labels:
+        return labels
 
     if result_text:
         first_token = result_text.split()[0].strip(".,:;!()[]{}")
         for subtask in subtasks:
             if first_token == subtask.lower():
-                return subtask
+                return [subtask]
 
-    return subtasks[-1] if subtasks else "idle"
+    return [subtasks[-1]] if subtasks else ["idle"]
 
 
 def collapse_labels_to_segments(
-    labels: list[str],
+    labels: list[list[str]],
     timestamps_s: list[float],
     episode_start_s: float,
     episode_end_s: float,
@@ -372,34 +389,36 @@ def collapse_labels_to_segments(
     if not labels or not timestamps_s:
         return []
 
-    segments: list[dict[str, Any]] = []
-    current_label = labels[0]
-    current_start_s = episode_start_s
+    intervals_by_label: dict[str, list[tuple[float, float]]] = defaultdict(list)
 
-    for idx in range(1, len(labels)):
-        if labels[idx] == current_label:
+    for idx, frame_labels in enumerate(labels):
+        if not frame_labels:
             continue
-        segment_end_s = timestamps_s[idx]
-        if segment_end_s > current_start_s:
+        interval_start = episode_start_s if idx == 0 else timestamps_s[idx]
+        interval_end = timestamps_s[idx + 1] if idx + 1 < len(timestamps_s) else episode_end_s
+        if interval_end <= interval_start:
+            continue
+        for label in frame_labels:
+            intervals_by_label[label].append((interval_start, interval_end))
+
+    segments: list[dict[str, Any]] = []
+    for label in sorted(intervals_by_label):
+        merged: list[tuple[float, float]] = []
+        for start_s, end_s in sorted(intervals_by_label[label]):
+            if not merged or start_s > merged[-1][1]:
+                merged.append((start_s, end_s))
+            else:
+                merged[-1] = (merged[-1][0], max(merged[-1][1], end_s))
+        for start_s, end_s in merged:
             segments.append(
                 {
-                    "phase": current_label,
-                    "start_s": round(current_start_s, 4),
-                    "end_s": round(segment_end_s, 4),
+                    "phase": label,
+                    "start_s": round(start_s, 4),
+                    "end_s": round(end_s, 4),
                 }
             )
-        current_label = labels[idx]
-        current_start_s = segment_end_s
 
-    if episode_end_s > current_start_s:
-        segments.append(
-            {
-                "phase": current_label,
-                "start_s": round(current_start_s, 4),
-                "end_s": round(episode_end_s, 4),
-            }
-        )
-
+    segments.sort(key=lambda row: (row["start_s"], row["end_s"], row["phase"]))
     return segments
 
 
@@ -548,7 +567,7 @@ def main() -> None:
             results.append({"episode_index": episode_index, "subtasks": []})
             continue
 
-        frame_labels: list[str] = []
+        frame_labels: list[list[str]] = []
 
         for sample_pos, frame_index in enumerate(sampled_indices):
             context_start = max(0, sample_pos - args.context_window)
@@ -569,9 +588,9 @@ def main() -> None:
 
                 valid_temp_files = [item for item in temp_files if item]
                 if not valid_temp_files:
-                    label = subtasks[-1] if subtasks else "idle"
+                    label_set = [subtasks[-1]] if subtasks else ["idle"]
                 else:
-                    label = label_frame_with_context(
+                    label_set = label_frame_with_context(
                         llm,
                         tokenizer,
                         sampling_params,
@@ -580,9 +599,9 @@ def main() -> None:
                         list(history),
                     )
 
-                frame_labels.append(label)
-                history.append(label)
-                print(f"  Frame {frame_index + 1}/{frame_count}: {label}")
+                frame_labels.append(label_set)
+                history.append(",".join(label_set))
+                print(f"  Frame {frame_index + 1}/{frame_count}: {', '.join(label_set)}")
             finally:
                 for temp_file in temp_files:
                     if temp_file:
