@@ -113,7 +113,7 @@ def find_video_sources(video_path: str | None = None, data_name: str = "double_d
             return sorted(Path(p) for p in glob.glob(str(path / "**" / "rgb.mp4"), recursive=True))
         return [path]
 
-    data_dir = Path(f"/scratch0/hkendall/cleaned_datasets/{data_name}/cameras")
+    data_dir = Path(f"/scratch0/xparker/cleaned_datasets/{data_name}/cameras")
     if not data_dir.exists():
         return []
 
@@ -135,7 +135,7 @@ def get_dataset_root(video_sources: list[Path], data_name: str) -> Path:
         for parent in [video_source.parent, *video_source.parents]:
             if (parent / "episode_events.jsonl").exists():
                 return parent
-    return Path(f"/scratch0/hkendall/cleaned_datasets/{data_name}")
+    return Path(f"/scratch0/xparker/cleaned_datasets/{data_name}")
 
 
 def get_video_frame_count(video_path: Path) -> int:
@@ -682,7 +682,7 @@ def main() -> None:
 
     try:
         llm = LLM(
-            model="Qwen/Qwen3-VL-8B-Instruct",
+            model="Qwen/Qwen3-VL-4B-Instruct",
             tensor_parallel_size=1,
             gpu_memory_utilization=args.gpu_mem_util,
             max_model_len=args.max_model_len,
