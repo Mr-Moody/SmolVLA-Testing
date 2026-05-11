@@ -5,12 +5,14 @@ const CHANNEL_COLORS = [
   'rgba(251,191,36,0.82)',  'rgba(34,211,238,0.82)',
 ];
 const DEFAULT_CHANNEL_DEFS = [
-  { id: 'approach_can',  label: 'Approach Can',  color: CHANNEL_COLORS[0] },
-  { id: 'grasp_can',     label: 'Grasp Can',     color: CHANNEL_COLORS[1] },
-  { id: 'lift_can',      label: 'Lift Can',      color: CHANNEL_COLORS[2] },
-  { id: 'move_to_tray',  label: 'Move to Tray',  color: CHANNEL_COLORS[3] },
-  { id: 'release_can',   label: 'Release Can',   color: CHANNEL_COLORS[4] },
-  { id: 'retract_arm',   label: 'Retract Arm',   color: CHANNEL_COLORS[5] },
+  { id: 'approach_MSD_plug',               label: 'Approach MSD Plug',          color: CHANNEL_COLORS[0] },
+  { id: 'positioning_the_gripper',         label: 'Position Gripper',           color: CHANNEL_COLORS[1] },
+  { id: 'grasp_the_plug',                  label: 'Grasp Plug',                 color: CHANNEL_COLORS[2] },
+  { id: 'move_the_plug_to_the_socket',     label: 'Move Plug to Socket',        color: CHANNEL_COLORS[3] },
+  { id: 'align_handle',                    label: 'Align Handle',               color: CHANNEL_COLORS[4] },
+  { id: 'nudging_the_plug_into_the_socket',label: 'Nudge Plug into Socket',     color: CHANNEL_COLORS[5] },
+  { id: 'place_the_plug_in_the_socket',    label: 'Place Plug in Socket',       color: CHANNEL_COLORS[6] },
+  { id: 'push_down_on_the_plug',           label: 'Push Down on Plug',          color: CHANNEL_COLORS[7] },
 ];
 
 // ── State ──────────────────────────────────────────────────────────────────
