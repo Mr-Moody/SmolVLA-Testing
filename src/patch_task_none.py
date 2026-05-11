@@ -56,6 +56,11 @@ def main() -> None:
     replacement = build_replacement_block()
 
     if PATCH_MARKER in source:
+        # v2 patch: uses _MSD_PLUG_TASKS lookup from complementary_data — already correct.
+        if "_MSD_PLUG_TASKS" in source:
+            print("v2 patch already applied (task_index lookup via complementary_data): nothing to do.")
+            return
+
         candidates = [
             '            task = ["unknown task"] * batch_size',
             f'            task = ["{FALLBACK_TASK_TEXT}"] * batch_size',
