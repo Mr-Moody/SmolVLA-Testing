@@ -822,7 +822,7 @@ function addClip(channelId, time) {
 
 function deleteClip(channelId, clipIndex) {
   const ch = subtaskState.channels.find(c => c.id === channelId);
-  if (!ch || ch.clips.length <= 1) return;
+  if (!ch) return;
   ch.clips.splice(clipIndex, 1);
   buildSubtaskTimeline();
   updateSubtaskUi();
