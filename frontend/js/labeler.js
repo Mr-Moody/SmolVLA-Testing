@@ -5,14 +5,14 @@ const CHANNEL_COLORS = [
   'rgba(251,191,36,0.82)',  'rgba(34,211,238,0.82)',
 ];
 const DEFAULT_CHANNEL_DEFS = [
-  { id: 'approach_MSD_plug',               label: 'Approach MSD Plug',          color: CHANNEL_COLORS[0] },
-  { id: 'positioning_the_gripper',         label: 'Position Gripper',           color: CHANNEL_COLORS[1] },
-  { id: 'grasp_the_plug',                  label: 'Grasp Plug',                 color: CHANNEL_COLORS[2] },
-  { id: 'move_the_plug_to_the_socket',     label: 'Move Plug to Socket',        color: CHANNEL_COLORS[3] },
-  { id: 'align_handle',                    label: 'Align Handle',               color: CHANNEL_COLORS[4] },
-  { id: 'nudging_the_plug_into_the_socket',label: 'Nudge Plug into Socket',     color: CHANNEL_COLORS[5] },
-  { id: 'place_the_plug_in_the_socket',    label: 'Place Plug in Socket',       color: CHANNEL_COLORS[6] },
-  { id: 'push_down_on_the_plug',           label: 'Push Down on Plug',          color: CHANNEL_COLORS[7] },
+  { id: 'approach_MSD_plug',                label: 'Approach MSD Plug',      color: CHANNEL_COLORS[0] },
+  { id: 'positioning_the_gripper',          label: 'Position Gripper',       color: CHANNEL_COLORS[1] },
+  { id: 'grasp_the_plug',                   label: 'Grasp Plug',             color: CHANNEL_COLORS[2] },
+  { id: 'move_the_plug_to_the_socket',      label: 'Move Plug to Socket',    color: CHANNEL_COLORS[3] },
+  { id: 'place_the_plug_in_the_socket',     label: 'Place Plug in Socket',   color: CHANNEL_COLORS[4] },
+  { id: 'nudging_the_plug_into_the_socket', label: 'Nudge Plug into Socket', color: CHANNEL_COLORS[5] },
+  { id: 'align_handle',                     label: 'Align Handle',           color: CHANNEL_COLORS[6] },
+  { id: 'push_down_on_the_plug',            label: 'Push Down on Plug',      color: CHANNEL_COLORS[7] },
 ];
 
 // ── State ──────────────────────────────────────────────────────────────────
@@ -523,14 +523,24 @@ function channelDefsKey() {
 }
 
 function loadChannelDefs() {
+  let saved = null;
   try {
     const raw = localStorage.getItem(channelDefsKey());
     if (raw) {
       const parsed = JSON.parse(raw);
-      if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+      if (Array.isArray(parsed) && parsed.length > 0) saved = parsed;
     }
   } catch { /* fall through */ }
-  return DEFAULT_CHANNEL_DEFS.map(d => ({ ...d }));
+  const base = saved || DEFAULT_CHANNEL_DEFS.map(d => ({ ...d }));
+  const presentIds = new Set(base.map(d => d.id));
+  const missing = DEFAULT_CHANNEL_DEFS.filter(d => !presentIds.has(d.id));
+  const merged = missing.length > 0 ? [...base, ...missing] : base;
+  const defaultOrder = new Map(DEFAULT_CHANNEL_DEFS.map((d, i) => [d.id, i]));
+  return merged.sort((a, b) => {
+    const ai = defaultOrder.has(a.id) ? defaultOrder.get(a.id) : Infinity;
+    const bi = defaultOrder.has(b.id) ? defaultOrder.get(b.id) : Infinity;
+    return ai - bi;
+  });
 }
 
 function saveChannelDefs() {
