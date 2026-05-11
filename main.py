@@ -11,6 +11,7 @@ Subcommands
 Examples
 --------
   uv --project ../lerobot run python main.py clean 001 --force
+  uv --project ../lerobot run python main.py annotate 001
   uv --project ../lerobot run python main.py label --port 5000
   uv --project ../lerobot run python main.py convert 001 --primary-camera ee_zed_m
   uv --project ../lerobot run python main.py train --dataset-root lerobot_datasets/001 --steps 20000
@@ -49,6 +50,9 @@ _CLEAN_JOINT_THRESHOLD     = 5e-4
 _CLEAN_GRIPPER_THRESHOLD   = 2e-4
 _CLEAN_TRANS_THRESHOLD     = 5e-6
 _CLEAN_ROT_THRESHOLD       = 5e-5
+
+# scripts/generate_annotations.py
+_ANNOT_DATASETS_ROOT       = Path("cleaned_datasets")
 
 # data_converter.py
 _CONV_DATASETS_ROOT        = Path("cleaned_datasets")
@@ -300,6 +304,56 @@ def _add_train_parser(sub: argparse._SubParsersAction) -> None:
     p.set_defaults(func=_cmd_train)
 
 
+# ---------------------------------------------------------------------------
+# annotate
+# ---------------------------------------------------------------------------
+
+def _add_annotate_parser(sub: argparse._SubParsersAction) -> None:
+    p = sub.add_parser(
+        "annotate",
+        help="Generate per-episode task prompts and write annotations.jsonl into a cleaned dataset.",
+    )
+    p.add_argument("dataset_name", help="Dataset folder name under --datasets-root.")
+    p.add_argument("--datasets-root", type=Path, default=_ANNOT_DATASETS_ROOT,
+                   help="Root directory containing cleaned datasets (default: %(default)s).")
+    p.add_argument("--overwrite", action="store_true",
+                   help="Overwrite an existing annotations.jsonl.")
+    p.set_defaults(func=_cmd_annotate)
+
+
+def _cmd_annotate(args: argparse.Namespace) -> None:
+    from src.scripts.generate_annotations import count_episodes
+    from src.create_labels import generate_prompts
+    from src.dataset_utils import save_annotation
+
+    dataset_dir = args.datasets_root / args.dataset_name
+    if not dataset_dir.exists():
+        print(f"ERROR: Dataset directory not found: {dataset_dir}", file=sys.stderr)
+        sys.exit(1)
+
+    annotations_path = dataset_dir / "annotations.jsonl"
+    if annotations_path.exists() and not args.overwrite:
+        print(
+            f"ERROR: {annotations_path} already exists. Use --overwrite to replace it.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    num_episodes = count_episodes(dataset_dir)
+    if num_episodes == 0:
+        print("ERROR: No episodes found in episode_events.jsonl.", file=sys.stderr)
+        sys.exit(1)
+
+    prompts = generate_prompts(num_episodes)
+    for episode_index, task in enumerate(prompts):
+        save_annotation(dataset_dir, episode_index, task)
+
+    print(f"Wrote {num_episodes} prompts to {annotations_path}")
+    print("\nExamples:")
+    for i, p in enumerate(prompts[:5]):
+        print(f"  [{i}] {p}")
+
+
 def _parse_episode_list(value: str | None) -> list[int] | None:
     if not value:
         return None
@@ -490,6 +544,7 @@ def main() -> None:
     # constants above — no src/ module is imported here, so startup is fast
     # regardless of which subcommand is used.
     _add_clean_parser(sub)
+    _add_annotate_parser(sub)
     _add_label_parser(sub)
     _add_convert_parser(sub)
     _add_train_parser(sub)

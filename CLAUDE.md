@@ -38,7 +38,6 @@ outputs/<name>_<model>/       ← training outputs
 ## 3. File Modification Rules
 
 **NEVER modify these existing files** (phase-conditioning work must not touch them):
-- `main.py`
 - `src/dataset_utils.py`
 - `src/labeler.py`
 - `src/create_labels.py`

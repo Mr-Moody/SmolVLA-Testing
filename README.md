@@ -32,14 +32,15 @@ Industrial-Project/
       robot/
         franka_interface.py    ← MockFrankaInterface + safety envelope (NaN/Inf/vel/force/gripper)
       scripts/                 ← Python CLI entry points (moved here from scripts/)
-        annotate_dataset.py    ← Batch Qwen annotation driver
-        build_gold_set.py      ← Interactive gold-set builder
-        deploy_check.py        ← Pre-deployment safety checklist
-        eval.py                ← Evaluation harness (dry-run + real)
-        report.py              ← Comparison report with Wilson CI + matplotlib charts
-        serve_qwen.py          ← Thin CLI wrapper around QwenAnnotator
-        train_phase.py         ← Phase-conditioned training entry point
-        tune_fsm.py            ← FSM threshold tuning vs Qwen ground-truth
+        annotate_dataset.py      ← Batch Qwen annotation driver
+        build_gold_set.py        ← Interactive gold-set builder
+        deploy_check.py          ← Pre-deployment safety checklist
+        eval.py                  ← Evaluation harness (dry-run + real)
+        generate_annotations.py  ← Generate + write per-episode task prompts
+        report.py                ← Comparison report with Wilson CI + matplotlib charts
+        serve_qwen.py            ← Thin CLI wrapper around QwenAnnotator
+        train_phase.py           ← Phase-conditioned training entry point
+        tune_fsm.py              ← FSM threshold tuning vs Qwen ground-truth
         writeback_annotations.py ← Merge phase + subtask columns into dataset copy
       data_cleaner.py
       data_converter.py
@@ -136,13 +137,16 @@ python -m src.scripts.<script> [args]
 # 1. Clean raw recording
 uv --project ../lerobot run python main.py clean <dataset_name>
 
-# 2. (Optional) Label episodes in the browser UI
+# 2. Generate per-episode global task prompts
+uv --project ../lerobot run python main.py annotate <dataset_name>
+
+# 3. Label episodes in the browser UI
 uv --project ../lerobot run python main.py label
 
-# 3. Convert to LeRobotDataset v3
+# 4. Convert to LeRobotDataset v3
 uv --project ../lerobot run python main.py convert <dataset_name> --primary-camera <camera_name>
 
-# 4. Train  (SmolVLA default; pass --model-type pi0, pi05, or act to switch)
+# 5. Train  (SmolVLA default; pass --model-type pi0, pi05, or act to switch)
 uv --project ../lerobot run python main.py train \
   --dataset-root lerobot_datasets/<dataset_name> \
   [--model-type smolvla|pi0|pi05|act]
@@ -363,6 +367,24 @@ Input: `raw_datasets/<dataset_name>/` → Output: `cleaned_datasets/<dataset_nam
 | `--max-episodes` | — | Limit number of episodes processed |
 | `--generate-tasks` | — | Auto-assign task prompt + write `annotations.jsonl` |
 | `--force` | — | Overwrite existing output directory |
+
+### `main.py annotate`
+
+Generates unique natural-language task prompts (one per episode) and writes them to `annotations.jsonl` inside the cleaned dataset. The converter picks this file up automatically via `load_annotations()` and stamps every frame with the correct task string.
+
+```bash
+uv --project ../lerobot run python main.py annotate <dataset_name>
+```
+
+Input: `cleaned_datasets/<dataset_name>/episode_events.jsonl` (used to count episodes)  
+Output: `cleaned_datasets/<dataset_name>/annotations.jsonl`
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--datasets-root` | `cleaned_datasets` | Override the cleaned datasets root |
+| `--overwrite` | — | Replace an existing `annotations.jsonl` |
+
+Prompts are drawn from a fixed vocabulary of verb/object/preposition/receptacle combinations and shuffled with seed 42, so output is reproducible. The number of prompts generated matches the episode count detected in the dataset.
 
 ### `main.py label`
 
