@@ -8,15 +8,67 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import random
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from src.create_labels import generate_prompts
 from src.dataset_utils import read_jsonl, save_annotation
 
 _DEFAULT_CLEANED_ROOT = Path(__file__).resolve().parents[2] / "cleaned_datasets"
+
+# (verb, preposition) pairs — only grammatically valid combinations are listed.
+# "Connect/Link X to Y", "Insert/Push/Slide X into Y", "Fit/Seat X in/into Y", etc.
+_VERB_PREP_PAIRS = [
+    ("Insert", "into"),
+    ("Insert", "in"),
+    ("Plug", "into"),
+    ("Plug", "in"),
+    ("Connect", "to"),
+    ("Link", "to"),
+    ("Push", "into"),
+    ("Slide", "into"),
+    ("Fit", "into"),
+    ("Fit", "in"),
+    ("Seat", "in"),
+    ("Lock", "into"),
+]
+
+_OBJECTS = [
+    "the orange MSD plug",
+    "the orange connector",
+    "the orange plug",
+    "the MSD connector",
+    "the orange electrical connector",
+]
+
+_RECEPTACLES = [
+    "the socket",
+    "the MSD socket",
+    "the connector socket",
+    "the port",
+    "the housing",
+]
+
+
+def generate_prompts(num_episodes: int) -> list[str]:
+    all_prompts = [
+        f"{v} {o} {p} {r}."
+        for v, p in _VERB_PREP_PAIRS
+        for o in _OBJECTS
+        for r in _RECEPTACLES
+    ]
+
+    if num_episodes > len(all_prompts):
+        raise ValueError(
+            f"Requested {num_episodes} prompts but only {len(all_prompts)} unique "
+            "combinations exist. Add more synonym entries."
+        )
+
+    rng = random.Random(42)
+    rng.shuffle(all_prompts)
+    return all_prompts[:num_episodes]
 
 
 def count_episodes(dataset_dir: Path) -> int:

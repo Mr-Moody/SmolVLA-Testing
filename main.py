@@ -322,8 +322,7 @@ def _add_annotate_parser(sub: argparse._SubParsersAction) -> None:
 
 
 def _cmd_annotate(args: argparse.Namespace) -> None:
-    from src.scripts.generate_annotations import count_episodes
-    from src.create_labels import generate_prompts
+    from src.scripts.generate_annotations import count_episodes, generate_prompts
     from src.dataset_utils import save_annotation
 
     dataset_dir = args.datasets_root / args.dataset_name
