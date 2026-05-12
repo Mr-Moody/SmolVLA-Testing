@@ -84,7 +84,7 @@ for ds in 200 201 201_1 202 203 204 205 206 207 208 209; do
         --datasets-root "${CLEANED_SCRATCH}" \
         --output-root "${LEROBOT_SCRATCH}" \
         --primary-camera wrist_d405 \
-        --cameras wrist_d405 \
+        --cameras wrist_d405,third_person_d405 \
         --vcodec h264_nvenc \
         --force; then
         echo "  \${ds}: converted with h264_nvenc"
@@ -94,7 +94,7 @@ for ds in 200 201 201_1 202 203 204 205 206 207 208 209; do
             --datasets-root "${CLEANED_SCRATCH}" \
             --output-root "${LEROBOT_SCRATCH}" \
             --primary-camera wrist_d405 \
-            --cameras wrist_d405 \
+            --cameras wrist_d405,third_person_d405 \
             --vcodec h264 \
             --force
         echo "  \${ds}: converted with h264"
