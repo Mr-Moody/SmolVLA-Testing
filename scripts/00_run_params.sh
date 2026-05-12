@@ -13,26 +13,25 @@ WORKFLOW_USER="eredhead"
 REMOTE_PROJECT_DIRNAME="smolvla_project"
 
 # -------- Core run controls --------
-# Run SmolVLA first (pipeline validation), then re-run with MODEL_TYPE="act" for ACT.
+# MSD plug insertion run — 11 datasets (200-209), SmolVLA 25k steps.
 MODEL_TYPE="smolvla"  # smolvla | act
-RUN_NAME="test_qwen_data"
-DATASET_NAMES=(qwen_data)
+RUN_NAME="msd_plug_200_209"
+DATASET_NAMES=(200 201 201_1 202 203 204 205 206 207 208 209)
 DATASET_ROOT="/scratch0/${WORKFLOW_USER}/lerobot_datasets"
-SAVE_FREQ=50
+SAVE_FREQ=2000
 
 # -------- Preprocessing controls --------
-# If true, convert cleaned_datasets -> lerobot_datasets on GPU right before training.
-PREPROCESS_ON_GPU=true
+# false: individual lerobot_datasets already on GPU scratch from SmolVLA run — skip re-conversion.
+PREPROCESS_ON_GPU=false
 REMOTE_CLEANED_DATASET_ROOT="/scratch0/${WORKFLOW_USER}/cleaned_datasets"
 PREPROCESS_VCODEC="h264_nvenc"
-# Primary camera for the convert step; mapped to observation.images.top in LeRobotDataset.
-PRIMARY_CAMERA="ee_zed_m_left"
-# Default task description written into annotations.jsonl for every episode.
-TASK_DESCRIPTION="Looking at objects"
+# Primary camera for the convert step; wrist_d405 only (no third-person camera).
+PRIMARY_CAMERA="wrist_d405"
+# Default task description for MSD plug insertion task.
+TASK_DESCRIPTION="Insert the MSD connector into the socket"
 # -------- Training hyperparameters --------
-# STEPS is intentionally tiny — this run is a pipeline/data-feed validation only.
-STEPS=50
-BATCH_SIZE=4
+STEPS=25000
+BATCH_SIZE=8
 NUM_WORKERS=4
 LOG_FREQ=50
 SEED=1000
@@ -53,7 +52,7 @@ ALLOW_MISSING_TASK_FALLBACK=true
 
 # -------- SSH topology --------
 REMOTE_USER="${WORKFLOW_USER}"
-GPU_NODE="bumblebee.cs.ucl.ac.uk"
+GPU_NODE="bluestreak.cs.ucl.ac.uk"
 JUMP_HOST="knuckles.cs.ucl.ac.uk"
 # SSH key for passwordless access. Generate once with:
 #   ssh-keygen -t ed25519 -f ~/.ssh/ucl_key -N ""

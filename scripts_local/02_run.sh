@@ -1,13 +1,16 @@
 #!/usr/bin/env bash
 # =============================================================================
-# 02_run.sh  —  Convert datasets and launch training on the local GPU
+# 02_run.sh  —  Clean → Convert → Train on the local GPU
 # =============================================================================
 #
 # Usage:
-#   bash scripts_local/02_run.sh [--resume]
+#   bash scripts_local/02_run.sh [--resume] [--skip-clean]
 #
 # Pipeline:
-#   cleaned_datasets/<name>/  →  lerobot_datasets/<name>/  →  outputs/<run>/
+#   raw_datasets/<name>/      (step 1: clean)
+#   cleaned_datasets/<name>/  (step 2: convert)
+#   lerobot_datasets/<name>/  (step 3: merge if needed, step 4: train)
+#   outputs/<run>/
 #
 # Edit scripts_local/params.sh (or params.local.sh) to configure the run.
 
@@ -22,22 +25,22 @@ source "${SCRIPT_DIR}/params.sh"
 # ---------------------------------------------------------------------------
 RESUME=false
 for arg in "$@"; do
-    [[ "${arg}" == "--resume" ]] && RESUME=true
+    [[ "${arg}" == "--resume" ]]     && RESUME=true
+    [[ "${arg}" == "--skip-clean" ]] && SKIP_CLEAN=true
 done
 
 RUN_TAG="${RUN_NAME}_${MODEL_TYPE}"
 OUTPUT_DIR="${OUTPUT_ROOT}/${RUN_TAG}"
 LOG_FILE="${OUTPUT_ROOT}/${RUN_TAG}.log"
 
-mkdir -p "${OUTPUT_ROOT}"
-
-# Shorthand: run python via the lerobot project (matches CLAUDE.md convention)
-UV="uv --project ${LEROBOT_ROOT} run python"
+# Shorthand: run python via the lerobot project using our dedicated venv.
+# UV_PROJECT_ENVIRONMENT keeps lerobot/.venv untouched (camera packages safe).
+UV="UV_PROJECT_ENVIRONMENT=${VENV_DIR} uv --project ${LEROBOT_ROOT} run python"
 
 # ---------------------------------------------------------------------------
 # Create local data directories if they don't exist yet
 # ---------------------------------------------------------------------------
-mkdir -p "${PROJECT_ROOT}/raw_datasets"
+mkdir -p "${RAW_DATASET_ROOT}"
 mkdir -p "${CLEANED_DATASET_ROOT}"
 mkdir -p "${LEROBOT_DATASET_ROOT}"
 mkdir -p "${PROJECT_ROOT}/checkpoints"
@@ -51,13 +54,29 @@ if [[ ! -d "${LEROBOT_ROOT}/src" ]]; then
     exit 1
 fi
 
-for ds in "${DATASET_NAMES[@]}"; do
-    if [[ ! -d "${CLEANED_DATASET_ROOT}/${ds}" ]]; then
-        echo "ERROR: cleaned dataset '${ds}' not found at ${CLEANED_DATASET_ROOT}/${ds}"
-        echo "       Copy it into ${CLEANED_DATASET_ROOT}/ before running."
-        exit 1
-    fi
-done
+if [[ ! -d "${VENV_DIR}" ]]; then
+    echo "ERROR: training venv not found at ${VENV_DIR}. Run 01_setup.sh first."
+    exit 1
+fi
+
+if [[ "${SKIP_CLEAN}" != "true" ]]; then
+    for ds in "${DATASET_NAMES[@]}"; do
+        if [[ ! -d "${RAW_DATASET_ROOT}/${ds}" ]]; then
+            echo "ERROR: raw dataset '${ds}' not found at ${RAW_DATASET_ROOT}/${ds}"
+            echo "       Copy raw recordings there, or set SKIP_CLEAN=true in params.sh"
+            echo "       if cleaned_datasets/ is already populated."
+            exit 1
+        fi
+    done
+else
+    for ds in "${DATASET_NAMES[@]}"; do
+        if [[ ! -d "${CLEANED_DATASET_ROOT}/${ds}" ]]; then
+            echo "ERROR: --skip-clean set but cleaned dataset '${ds}' not found"
+            echo "       at ${CLEANED_DATASET_ROOT}/${ds}"
+            exit 1
+        fi
+    done
+fi
 
 echo "================================================================="
 echo "  SmolVLA Local Training"
@@ -67,6 +86,7 @@ echo "  Model     : ${MODEL_TYPE}"
 echo "  Datasets  : ${DATASET_NAMES[*]}"
 echo "  Device    : ${DEVICE}"
 echo "  Steps     : ${STEPS}  |  Batch: ${BATCH_SIZE}"
+echo "  Skip clean: ${SKIP_CLEAN}"
 echo "  Output    : ${OUTPUT_DIR}"
 echo "  Log       : ${LOG_FILE}"
 echo "  Resume    : ${RESUME}"
@@ -74,9 +94,45 @@ echo "================================================================="
 echo ""
 
 # ---------------------------------------------------------------------------
-# Step 1: Convert each cleaned dataset → lerobot_datasets/
+# Step 1: Clean raw recordings → cleaned_datasets/
 # ---------------------------------------------------------------------------
-echo "[1/3] Converting cleaned datasets..."
+if [[ "${SKIP_CLEAN}" == "true" ]]; then
+    echo "[1/4] Skipping clean step (SKIP_CLEAN=true)."
+else
+    echo "[1/4] Cleaning raw datasets..."
+    for ds in "${DATASET_NAMES[@]}"; do
+        echo "  Cleaning '${ds}'..."
+
+        # annotations.jsonl canonical home is raw_datasets/<ds>/annotations.jsonl.
+        # If it only exists in cleaned_datasets/ (e.g. first run), seed it there now
+        # so it survives future --force cleans without needing the cleaned copy.
+        ANN_RAW="${RAW_DATASET_ROOT}/${ds}/annotations.jsonl"
+        ANN_CLEANED="${CLEANED_DATASET_ROOT}/${ds}/annotations.jsonl"
+        if [[ ! -f "${ANN_RAW}" && -f "${ANN_CLEANED}" ]]; then
+            cp "${ANN_CLEANED}" "${ANN_RAW}"
+            echo "  Seeded annotations.jsonl into raw_datasets/${ds}/."
+        fi
+
+        ${UV} "${PROJECT_ROOT}/main.py" clean "${ds}" \
+            --datasets-root "${RAW_DATASET_ROOT}" \
+            --output-root   "${CLEANED_DATASET_ROOT}" \
+            --force
+
+        # Restore annotations from raw_datasets/ if the cleaner didn't generate its own.
+        if [[ ! -f "${ANN_CLEANED}" && -f "${ANN_RAW}" ]]; then
+            cp "${ANN_RAW}" "${ANN_CLEANED}"
+            echo "  Restored annotations.jsonl for '${ds}'."
+        fi
+
+        echo "  Done: ${CLEANED_DATASET_ROOT}/${ds}"
+    done
+fi
+
+# ---------------------------------------------------------------------------
+# Step 2: Convert cleaned datasets → lerobot_datasets/
+# ---------------------------------------------------------------------------
+echo ""
+echo "[2/4] Converting cleaned datasets..."
 
 for ds in "${DATASET_NAMES[@]}"; do
     echo "  Converting '${ds}'..."
@@ -90,7 +146,7 @@ for ds in "${DATASET_NAMES[@]}"; do
 done
 
 # ---------------------------------------------------------------------------
-# Step 2: Merge datasets if more than one
+# Step 3: Merge datasets if more than one
 # ---------------------------------------------------------------------------
 TRAIN_DATASET_ROOT="${LEROBOT_DATASET_ROOT}/${DATASET_NAMES[0]}"
 
@@ -98,7 +154,7 @@ if [[ "${#DATASET_NAMES[@]}" -gt 1 ]]; then
     DATASET_NAME_JOINED=$(IFS="_"; echo "${DATASET_NAMES[*]}")
     MERGED_ROOT="${LEROBOT_DATASET_ROOT}/merged_${DATASET_NAME_JOINED}"
     echo ""
-    echo "[2/3] Merging ${#DATASET_NAMES[@]} datasets into ${MERGED_ROOT}..."
+    echo "[3/4] Merging ${#DATASET_NAMES[@]} datasets into ${MERGED_ROOT}..."
 
     DATASET_PATHS=()
     for ds in "${DATASET_NAMES[@]}"; do
@@ -114,14 +170,14 @@ if [[ "${#DATASET_NAMES[@]}" -gt 1 ]]; then
     echo "  Merge complete: ${TRAIN_DATASET_ROOT}"
 else
     echo ""
-    echo "[2/3] Single dataset — skipping merge."
+    echo "[3/4] Single dataset — skipping merge."
 fi
 
 # ---------------------------------------------------------------------------
-# Step 3: Apply lerobot runtime patches
+# Step 4: Apply lerobot patches + train
 # ---------------------------------------------------------------------------
 echo ""
-echo "[3/3] Applying lerobot patches..."
+echo "[4/4] Applying lerobot patches and launching training..."
 
 ${UV} "${PROJECT_ROOT}/src/patch_frame_tolerance.py"
 echo "  patch_frame_tolerance applied."
@@ -129,9 +185,6 @@ echo "  patch_frame_tolerance applied."
 ${UV} "${PROJECT_ROOT}/src/patch_task_none.py"
 echo "  patch_task_none applied."
 
-# ---------------------------------------------------------------------------
-# Build training command
-# ---------------------------------------------------------------------------
 case "${MODEL_TYPE}" in
     smolvla)
         POLICY_PATH="${SMOLVLA_POLICY_PATH}"
@@ -172,12 +225,9 @@ if [[ -d "${OUTPUT_DIR}/checkpoints" ]] && \
     exit 1
 fi
 
-# ---------------------------------------------------------------------------
-# Launch training
-# ---------------------------------------------------------------------------
 echo ""
-echo "Launching training..."
-echo "  Log: ${LOG_FILE}"
+echo "Training: ${TRAIN_DATASET_ROOT} → ${OUTPUT_DIR}"
+echo "Log: ${LOG_FILE}"
 echo ""
 
 ${UV} "${PROJECT_ROOT}/main.py" train \
