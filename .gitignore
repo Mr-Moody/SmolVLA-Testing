@@ -237,5 +237,7 @@ checkpoints/
 trailbreaker_commands_private.md
 scripts/00_run_params.local.sh
 scripts_local/params.local.sh
+scripts_local/hf_params.local.sh
+.hf_cache/
 smolvla_qwen_guide.tex
 gpu_node_setup_notes.md
