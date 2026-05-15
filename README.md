@@ -20,19 +20,9 @@ Industrial-Project/
         prompt.py              ← PromptBuilder — task-aware few-shot prompt assembly
         schema.py              ← PhaseSegment + EpisodeAnnotation (Pydantic v2)
         validator.py           ← Annotation quality checks (schema, legality, FSM x-check)
-      fsm/
-        runtime_fsm.py         ← RuntimeFSM — predicate-based, hysteresis-debounced
-      smolvla_fork/
-        configuration_smolvla.py  ← SmolVLAForkedConfig (phase_dropout_prob, use_phase_conditioning)
-        modeling_smolvla.py       ← VLAFlowMatchingPhased + SmolVLAPhasedPolicy
-        dataset.py                ← PhaseConditionedDataset + phase_collate_fn
-        CHANGELOG.md              ← upstream version + what was changed
-      inference/
-        policy_runner.py       ← PolicyRunner — closed-loop episode runner
-      robot/
-        franka_interface.py    ← MockFrankaInterface + safety envelope (NaN/Inf/vel/force/gripper)
-      scripts/                 ← Python CLI entry points (moved here from scripts/)
+      cli/                     ← Python CLI entry points (run directly or via uv)
         annotate_dataset.py      ← Batch Qwen annotation driver
+        annotate_cleaned_dataset.py ← Annotate cleaned_datasets/ format directly
         build_gold_set.py        ← Interactive gold-set builder
         deploy_check.py          ← Pre-deployment safety checklist
         eval.py                  ← Evaluation harness (dry-run + real)
@@ -42,14 +32,39 @@ Industrial-Project/
         train_phase.py           ← Phase-conditioned training entry point
         tune_fsm.py              ← FSM threshold tuning vs Qwen ground-truth
         writeback_annotations.py ← Merge phase + subtask columns into dataset copy
-      data_cleaner.py
-      data_converter.py
-      dataset_utils.py
-      labeler.py
-      create_labels.py
-      merge_datasets.py
-      train_act.py
-      train_pi0.py
+      data/                    ← data pipeline utilities
+        utils.py               ← Shared data structures + I/O helpers
+        cleaner.py             ← DatasetCleaner — raw → cleaned_datasets
+        converter.py           ← SmolVLADatasetConverter — cleaned → LeRobotDataset v3
+        merge.py               ← Merge multiple LeRobotDataset v3 directories
+        labeler.py             ← Flask labeling server (browser UI)
+        check_cameras.py       ← Preflight camera validation
+      fsm/
+        runtime_fsm.py         ← RuntimeFSM — predicate-based, hysteresis-debounced
+      hf/
+        dataset_hub.py         ← Download + validate HuggingFace datasets
+      inference/
+        policy_runner.py       ← PolicyRunner — closed-loop episode runner
+      labels/                  ← Task prompt generators
+        pick_place.py          ← Pick-and-place prompts (soup can task)
+        msd.py                 ← MSD connector insertion prompts
+        soup.py                ← Soup can prompts
+      patches/                 ← lerobot monkey-patches (apply before importing lerobot)
+        frame_tolerance.py     ← Warn instead of raise on timestamp tolerance violations
+        nvenc.py               ← Route h264_nvenc to system ffmpeg
+        task_none.py           ← Fallback label when task is None
+      robot/
+        franka_interface.py    ← MockFrankaInterface + safety envelope (NaN/Inf/vel/force/gripper)
+        smolvla_setup.py       ← SmolVLA inference sanity check + dataset inspection
+        filters.py             ← Butterworth + EMA low-pass filters
+      smolvla_fork/
+        configuration_smolvla.py  ← SmolVLAForkedConfig (phase_dropout_prob, use_phase_conditioning)
+        modeling_smolvla.py       ← VLAFlowMatchingPhased + SmolVLAPhasedPolicy
+        dataset.py                ← PhaseConditionedDataset + phase_collate_fn
+        CHANGELOG.md              ← upstream version + what was changed
+      training/                ← model training backends
+        act.py                 ← ACT training loop
+        pi0.py                 ← Pi0 / Pi0.5 training loop
     scripts/                   ← Shell scripts only (batch ops, GPU cluster)
       00_run_params.sh … 05_extract_from_scratch.sh
       convert_all.sh  run_training.sh  setup_scratch.sh  …
@@ -60,7 +75,7 @@ Industrial-Project/
         default.yaml  pick_place.yaml  msd_plug.yaml
       eval/
         standard.yaml
-    tests/                     ← pytest suite (81 tests, all passing)
+    tests/                     ← pytest suite (101 tests, all passing)
     data/gold/                 ← hand-annotated few-shot episodes
     outputs/                   ← training checkpoints, eval results, reports
     frontend/                  ← labeler web UI
@@ -121,12 +136,12 @@ pip install -r requirements_phase.txt
 uv --project ../lerobot run python main.py <subcommand> [args]
 ```
 
-Python CLI scripts in `src/scripts/` can be run directly (they manage their own `sys.path`):
+Python CLI scripts in `src/cli/` can be run directly (they manage their own `sys.path`):
 
 ```bash
-python src/scripts/<script>.py [args]
+python src/cli/<script>.py [args]
 # or
-python -m src.scripts.<script> [args]
+python -m src.cli.<script> [args]
 ```
 
 ---
@@ -232,35 +247,35 @@ forward pass is byte-identical to the upstream SmolVLA.
 
 ```bash
 # 1. Build gold episodes interactively (few-shot source of truth → data/gold/)
-python src/scripts/build_gold_set.py \
+python src/cli/build_gold_set.py \
   --dataset-root lerobot_datasets/<name> \
   --episode-id 0 --task pick_place
 
 # 2. Batch-annotate all episodes with Qwen3-VL
-python src/scripts/annotate_dataset.py \
+python src/cli/annotate_dataset.py \
   --dataset-root lerobot_datasets/<name> \
   --task pick_place \
   --output-dir outputs/annotations
 
 # 3. Write phase + subtask columns into annotated dataset copy
-python src/scripts/writeback_annotations.py \
+python src/cli/writeback_annotations.py \
   --annotations-dir outputs/annotations \
   --source-dataset lerobot_datasets/<name> \
   --output-dataset lerobot_datasets/<name>_annotated
 
 # 4. (Optional) Tune FSM thresholds against Qwen ground truth
-python src/scripts/tune_fsm.py \
+python src/cli/tune_fsm.py \
   --episode-parquet outputs/annotations/episode_000000.parquet \
   --task pick_place \
   --annotation-json data/gold/0.json
 
 # 5. Train phase-conditioned variant
-python src/scripts/train_phase.py \
+python src/cli/train_phase.py \
   --config configs/training/smolvla_fsm.yaml \
   --dataset-name <name>
 
 # 6. Smoke-test training (10 steps, mock dataset if real one missing)
-python src/scripts/train_phase.py \
+python src/cli/train_phase.py \
   --config configs/training/smolvla_fsm.yaml \
   --dataset-name <name> \
   --smoke-test
@@ -273,7 +288,7 @@ python src/scripts/train_phase.py \
 ### Run evaluation harness (dry-run / CI)
 
 ```bash
-python src/scripts/eval.py \
+python src/cli/eval.py \
   --variant smolvla_baseline \
   --task pick_place \
   --dry-run
@@ -282,11 +297,11 @@ python src/scripts/eval.py \
 ### Run all three variants and generate comparison report
 
 ```bash
-python src/scripts/eval.py --variant smolvla_baseline --task pick_place --dry-run
-python src/scripts/eval.py --variant smolvla_fsm      --task pick_place --dry-run
-python src/scripts/eval.py --variant pi0_subtask      --task pick_place --dry-run
+python src/cli/eval.py --variant smolvla_baseline --task pick_place --dry-run
+python src/cli/eval.py --variant smolvla_fsm      --task pick_place --dry-run
+python src/cli/eval.py --variant pi0_subtask      --task pick_place --dry-run
 
-python src/scripts/report.py \
+python src/cli/report.py \
   outputs/eval/<ts>_smolvla_baseline_pick_place/results.json \
   outputs/eval/<ts>_smolvla_fsm_pick_place/results.json \
   outputs/eval/<ts>_pi0_subtask_pick_place/results.json
@@ -313,10 +328,10 @@ The report writes:
 
 ```bash
 # Mock mode (CI / offline):
-python src/scripts/deploy_check.py --mock
+python src/cli/deploy_check.py --mock
 
 # Real robot:
-python src/scripts/deploy_check.py \
+python src/cli/deploy_check.py \
   --checkpoint outputs/my_run/checkpoint_10000 \
   --variant smolvla_fsm
 ```
@@ -339,7 +354,9 @@ Test markers:
 - `@pytest.mark.gpu` — requires CUDA GPU
 - `@pytest.mark.robot` — requires physical Franka robot (always skipped in CI)
 
-Current status: **81 tests, 81 pass**.
+Current status: **101 tests, 101 pass** (`-m "not gpu"`).
+
+CI runs automatically on every push and PR to `main` via `.github/workflows/ci.yml`.
 
 ---
 
@@ -478,14 +495,14 @@ uv --project ../lerobot run python main.py train --dataset-root <path> [options]
 ### Inspect an Exported Dataset
 
 ```bash
-uv --project ../lerobot run python src/smolvla_franka_setup.py \
+uv --project ../lerobot run python src/robot/smolvla_setup.py \
   --mode inspect --dataset-root lerobot_datasets/example
 ```
 
 ### SmolVLA Inference Sanity Check
 
 ```bash
-uv --project ../lerobot run python src/smolvla_franka_setup.py --mode demo
+uv --project ../lerobot run python src/robot/smolvla_setup.py --mode demo
 ```
 
 ### Verify CUDA / Torch
