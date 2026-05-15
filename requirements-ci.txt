@@ -1,0 +1,10 @@
+# Lightweight deps for CI test runs (no GPU, no lerobot full install).
+# Tests that require lerobot or a GPU are excluded via markers / --deselect.
+--extra-index-url https://download.pytorch.org/whl/cpu
+
+pytest>=8.0
+numpy
+pydantic>=2.0
+pyyaml
+torch
+huggingface_hub
