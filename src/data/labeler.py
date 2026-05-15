@@ -27,12 +27,7 @@ from typing import Any, Callable
 
 from flask import Flask, Response, jsonify, render_template, request, send_file
 
-# ---------------------------------------------------------------------------
-# Add project root to path so dataset_utils can be imported directly
-# ---------------------------------------------------------------------------
-sys.path.insert(0, str(Path(__file__).parent))
-
-from dataset_utils import (
+from src.data.utils import (
     find_episode_boundaries,
     infer_timestamp_ns,
     load_annotations,

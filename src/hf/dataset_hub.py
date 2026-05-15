@@ -261,11 +261,7 @@ def prepare_datasets(
 
     LOGGER.info("Merging %d datasets → %s", len(local_paths), merge_output)
 
-    # Import merge from existing src/merge_datasets.py
-    src_dir = Path(__file__).resolve().parent.parent
-    if str(src_dir) not in sys.path:
-        sys.path.insert(0, str(src_dir))
-    from merge_datasets import merge
+    from src.data.merge import merge
 
     merge(source_roots=local_paths, output_root=merge_output, force=True)
 

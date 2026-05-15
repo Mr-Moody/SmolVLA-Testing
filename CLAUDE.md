@@ -37,16 +37,6 @@ outputs/<name>_<model>/       ← training outputs
 
 ## 3. File Modification Rules
 
-**NEVER modify these existing files** (phase-conditioning work must not touch them):
-- `src/dataset_utils.py`
-- `src/labeler.py`
-- `src/create_labels.py`
-- `src/merge_datasets.py`
-- `src/train_act.py`
-- `src/train_pi0.py`
-- `src/smolvla_franka_setup.py`
-- `scripts/00_run_params.sh` through `scripts/05_extract_from_scratch.sh`
-
 All **new** code goes under `src/<subpackage>/` with matching tests under `tests/`.
 
 ---

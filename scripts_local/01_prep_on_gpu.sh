@@ -8,10 +8,10 @@
 #
 # What this does on the GPU:
 #   1. main.py clean        — raw_datasets → cleaned_datasets (all 11)
-#   2. create_labels_msd.py — generate annotations.jsonl in each cleaned dir
+#   2. src/labels/msd.py    — generate annotations.jsonl in each cleaned dir
 #   3. main.py convert      — cleaned_datasets → lerobot_datasets (wrist_d405 only)
 #                             tries h264_nvenc first, falls back to h264
-#   4. merge_datasets.py    — merge all 11 → lerobot_datasets/merged_msd_200_209
+#   4. src/data/merge.py    — merge all 11 → lerobot_datasets/merged_msd_200_209
 #
 # Output: /scratch0/$USER/lerobot_datasets/merged_msd_200_209
 set -euo pipefail
@@ -70,7 +70,7 @@ for ds in 200 201 201_1 202 203 204 205 206 207 208 209; do
     CLEANED_DIRS="\${CLEANED_DIRS} ${CLEANED_SCRATCH}/\${ds}"
 done
 cd "${LEROBOT_DIR}"
-uv run python "${CODE_DIR}/src/create_labels_msd.py" \${CLEANED_DIRS} --force
+uv run python "${CODE_DIR}/src/labels/msd.py" \${CLEANED_DIRS} --force
 
 # -----------------------------------------------------------------------
 # Step 3: Convert cleaned → lerobot_datasets (wrist_d405 as primary camera)
@@ -111,7 +111,7 @@ for ds in 200 201 201_1 202 203 204 205 206 207 208 209; do
     DATASET_PATHS="\${DATASET_PATHS} ${LEROBOT_SCRATCH}/\${ds}"
 done
 cd "${LEROBOT_DIR}"
-uv run python "${CODE_DIR}/src/merge_datasets.py" \${DATASET_PATHS} \
+uv run python "${CODE_DIR}/src/data/merge.py" \${DATASET_PATHS} \
     --output "${MERGED_OUTPUT}" \
     --force
 

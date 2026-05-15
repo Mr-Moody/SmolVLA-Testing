@@ -32,7 +32,7 @@ os.environ["HF_HUB_OFFLINE"] = "1"
 sys.argv.append(f"--config_path={CONFIG_PATH}")
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from src.train_act import train_act
+from src.training.act import train_act
 
 train_act(
     dataset_root=DATASET_ROOT,

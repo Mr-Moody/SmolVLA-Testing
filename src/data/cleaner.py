@@ -29,13 +29,10 @@ import shutil
 from pathlib import Path
 from typing import Any
 
-import sys as _sys
-_sys.path.insert(0, str(Path(__file__).parent))
-
 import torch
 
-from create_labels import generate_prompts
-from dataset_utils import (
+from src.labels.pick_place import generate_prompts
+from src.data.utils import (
     DEFAULT_CAMERA_TOLERANCE_NS,
     find_episode_boundaries,
     infer_timestamp_ns,

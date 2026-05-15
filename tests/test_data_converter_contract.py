@@ -12,7 +12,7 @@ import pytest
 @pytest.fixture()
 def data_converter(monkeypatch):
     """Import data_converter with heavy optional runtime deps stubbed."""
-    sys.modules.pop("src.data_converter", None)
+    sys.modules.pop("src.data.converter", None)
 
     fake_torch = types.ModuleType("torch")
     fake_cv2 = types.ModuleType("cv2")
@@ -35,9 +35,9 @@ def data_converter(monkeypatch):
     monkeypatch.setitem(sys.modules, "lerobot.datasets", fake_datasets)
     monkeypatch.setitem(sys.modules, "lerobot.datasets.lerobot_dataset", fake_lerobot_dataset)
 
-    module = importlib.import_module("src.data_converter")
+    module = importlib.import_module("src.data.converter")
     yield module
-    sys.modules.pop("src.data_converter", None)
+    sys.modules.pop("src.data.converter", None)
 
 
 def _row(q, gripper_width, gripper_command, q_cmd=None, backfilled_q_cmd=None):

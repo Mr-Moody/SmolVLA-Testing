@@ -30,9 +30,6 @@ import threading
 import webbrowser
 from pathlib import Path
 
-# Ensure src/ modules are importable regardless of invocation directory.
-sys.path.insert(0, str(Path(__file__).parent / "src"))
-
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
 LOGGER = logging.getLogger(__name__)
 
@@ -96,7 +93,7 @@ def _add_clean_parser(sub: argparse._SubParsersAction) -> None:
 
 
 def _cmd_clean(args: argparse.Namespace) -> None:
-    from data_cleaner import DatasetCleaner
+    from src.data.cleaner import DatasetCleaner
     dataset_dir = args.datasets_root / args.dataset_name
     if not dataset_dir.exists():
         raise FileNotFoundError(f"Dataset '{args.dataset_name}' not found at {dataset_dir}")
@@ -132,7 +129,7 @@ def _add_label_parser(sub: argparse._SubParsersAction) -> None:
 
 
 def _cmd_label(args: argparse.Namespace) -> None:
-    import labeler
+    import src.data.labeler as labeler
 
     if not args.cleaned_root.exists():
         print(f"Error: cleaned datasets root not found: {args.cleaned_root}", file=sys.stderr)
@@ -203,7 +200,7 @@ def _add_convert_parser(sub: argparse._SubParsersAction) -> None:
 
 
 def _cmd_convert(args: argparse.Namespace) -> None:
-    from data_converter import SmolVLADatasetConverter, DEFAULT_REPO_OWNER
+    from src.data.converter import SmolVLADatasetConverter, DEFAULT_REPO_OWNER
     dataset_dir = args.datasets_root / args.dataset_name
     if not dataset_dir.exists():
         raise FileNotFoundError(f"Dataset '{args.dataset_name}' not found at {dataset_dir}")
@@ -322,8 +319,8 @@ def _add_annotate_parser(sub: argparse._SubParsersAction) -> None:
 
 
 def _cmd_annotate(args: argparse.Namespace) -> None:
-    from src.scripts.generate_annotations import count_episodes, generate_prompts
-    from src.dataset_utils import save_annotation
+    from src.cli.generate_annotations import count_episodes, generate_prompts
+    from src.data.utils import save_annotation
 
     dataset_dir = args.datasets_root / args.dataset_name
     if not dataset_dir.exists():
@@ -506,7 +503,7 @@ def _cmd_train(args: argparse.Namespace) -> None:
     if model_type == "smolvla":
         _train_smolvla(**common)
     elif model_type == "act":
-        from train_act import train_act
+        from src.training.act import train_act
         train_act(
             **common,
             chunk_size=args.chunk_size,
@@ -515,7 +512,7 @@ def _cmd_train(args: argparse.Namespace) -> None:
             vision_backbone=args.vision_backbone,
         )
     else:
-        from train_pi0 import train_pi0
+        from src.training.pi0 import train_pi0
         train_pi0(
             **common,
             model_type=model_type,

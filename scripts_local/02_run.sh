@@ -161,7 +161,7 @@ if [[ "${#DATASET_NAMES[@]}" -gt 1 ]]; then
         DATASET_PATHS+=("${LEROBOT_DATASET_ROOT}/${ds}")
     done
 
-    ${UV} "${PROJECT_ROOT}/src/merge_datasets.py" \
+    ${UV} "${PROJECT_ROOT}/src/data/merge.py" \
         "${DATASET_PATHS[@]}" \
         --output "${MERGED_ROOT}" \
         --force

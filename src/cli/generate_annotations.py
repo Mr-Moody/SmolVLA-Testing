@@ -1,8 +1,8 @@
 """Write per-episode task prompts into a cleaned dataset's annotations.jsonl.
 
 Usage:
-    uv --project ../lerobot run python src/scripts/generate_annotations.py --data-name 200
-    uv --project ../lerobot run python src/scripts/generate_annotations.py --data-name 200 --dataset-root /path/to/cleaned_datasets
+    uv --project ../lerobot run python src/cli/generate_annotations.py --data-name 200
+    uv --project ../lerobot run python src/cli/generate_annotations.py --data-name 200 --dataset-root /path/to/cleaned_datasets
 """
 
 from __future__ import annotations
@@ -14,7 +14,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from src.dataset_utils import read_jsonl, save_annotation
+from src.data.utils import read_jsonl, save_annotation
 
 _DEFAULT_CLEANED_ROOT = Path(__file__).resolve().parents[2] / "cleaned_datasets"
 

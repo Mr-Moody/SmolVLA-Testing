@@ -242,9 +242,8 @@ class TestPrepareDatasets:
         mock_dl.side_effect = [ds1, ds2]
         mock_val.return_value = ValidationResult(valid=True)
 
-        with patch.dict("sys.modules", {"merge_datasets": MagicMock()}) as _:
-            import importlib
-            merge_mod = sys.modules["merge_datasets"]
+        with patch.dict("sys.modules", {"src.data.merge": MagicMock()}) as _:
+            merge_mod = sys.modules["src.data.merge"]
             merge_mod.merge = MagicMock()
 
             result = prepare_datasets(
@@ -254,7 +253,7 @@ class TestPrepareDatasets:
             )
 
             merge_mod.merge.assert_called_once()
-            call_kwargs = merge_mod.merge.call_args[1]
+            call_kwargs = merge_mod.merge.call_args.kwargs
             assert call_kwargs["source_roots"] == [ds1, ds2]
             assert call_kwargs["output_root"] == merge_out
 
